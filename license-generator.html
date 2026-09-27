@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TE IG Assist — License Generator</title>
+  <style>
+    :root {
+      --bg: #0a0a0c;
+      --card: #14141a;
+      --border: #2a2a35;
+      --text: #f4f4f5;
+      --muted: #a1a1aa;
+      --primary: #a855f7;
+      --accent: #ec4899;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Vazirmatn, Tahoma, system-ui, sans-serif;
+      background: radial-gradient(ellipse at top, #1a1030 0%, var(--bg) 55%);
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .card {
+      width: min(520px, 100%);
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 28px;
+      box-shadow: 0 24px 80px rgba(168, 85, 247, 0.12);
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-size: 1.25rem;
+      background: linear-gradient(90deg, var(--primary), var(--accent));
+      -webkit-background-clip: text;
+      color: transparent;
+    }
+    .sub { color: var(--muted); font-size: 0.8rem; margin-bottom: 22px; }
+    label { display: block; font-size: 0.75rem; color: var(--muted); margin-bottom: 6px; }
+    input, textarea {
+      width: 100%;
+      background: #0c0c10;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      color: var(--text);
+      padding: 10px 12px;
+      font-size: 0.9rem;
+      margin-bottom: 14px;
+      outline: none;
+    }
+    input:focus, textarea:focus { border-color: var(--primary); }
+    textarea { min-height: 120px; font-family: ui-monospace, monospace; font-size: 0.72rem; direction: ltr; text-align: left; }
+    .row { display: flex; gap: 10px; }
+    .row > * { flex: 1; }
+    button {
+      width: 100%;
+      border: 0;
+      border-radius: 12px;
+      padding: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      background: linear-gradient(90deg, var(--primary), var(--accent));
+      color: white;
+      font-size: 0.9rem;
+    }
+    button.secondary {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      margin-top: 8px;
+    }
+    .hint { font-size: 0.7rem; color: var(--muted); margin-top: 12px; line-height: 1.6; }
+    .ok { color: #4ade80; font-size: 0.8rem; margin-top: 8px; display: none; }
+  </style>
+  <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;600&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <div class="card">
+    <h1>تولید لایسنس TE IG Assist</h1>
+    <p class="sub">سازنده: مجید محبوبیان · تیم: TERMIMAL</p>
+
+    <label>نام کاربری</label>
+    <input id="username" placeholder="مثلاً majid" autocomplete="off" />
+
+    <label>ایمیل</label>
+    <input id="email" type="email" placeholder="user@example.com" autocomplete="off" />
+
+    <label>قفل رندوم (اختیاری — اگر خالی باشد تولید می‌شود)</label>
+    <div class="row">
+      <input id="lock" placeholder="خالی بگذارید تا رندوم شود" autocomplete="off" />
+    </div>
+
+    <button id="gen">تولید لایسنس</button>
+
+    <label style="margin-top:16px">لایسنس</label>
+    <textarea id="license" readonly placeholder="لایسنس اینجا ظاهر می‌شود…"></textarea>
+
+    <label>قفل نهایی (همراه لایسنس به کاربر بدهید)</label>
+    <input id="lockOut" readonly />
+
+    <button class="secondary" id="copy">کپی همه اطلاعات</button>
+    <div class="ok" id="copied">کپی شد ✓</div>
+
+    <p class="hint">
+      کاربر در اپ باید <b>نام کاربری + ایمیل + قفل + لایسنس</b> را وارد کند.
+      الگوریتم با اپ یکی است (TEIG1 + هش چندلایه).
+    </p>
+  </div>
+
+  <script>
+    const APP_SECRET = 'TE-IG-ASSIST-TERMIMAL-2026-v1'
+
+    async function sha256Hex(input) {
+      const data = new TextEncoder().encode(input)
+      const buf = await crypto.subtle.digest('SHA-256', data)
+      return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('')
+    }
+
+    function randomLock(len = 28) {
+      const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789abcdefghijkmnopqrstuvwxyz'
+      const arr = new Uint8Array(len)
+      crypto.getRandomValues(arr)
+      let out = ''
+      for (let i = 0; i < len; i++) out += chars[arr[i] % chars.length]
+      return out
+    }
+
+    async function generateLicense(username, email, lock) {
+      const u = username.trim().replace(/^@/, '').toLowerCase()
+      const e = email.trim().toLowerCase()
+      const l = (lock || randomLock()).trim()
+      const material = u + '|' + e + '|' + l + '|' + APP_SECRET
+      const h1 = await sha256Hex(material)
+      const h2 = await sha256Hex(h1 + '|' + material)
+      const h3 = await sha256Hex(h2 + '|' + h1 + '|' + APP_SECRET)
+      const h4 = await sha256Hex(u + '|' + h3 + '|' + e)
+      const body = (h1 + h2 + h3 + h4 + h1.slice(0, 64)).slice(0, 320)
+      return { license: 'TEIG1.' + body, lock: l, username: u, email: e }
+    }
+
+    document.getElementById('gen').onclick = async () => {
+      const username = document.getElementById('username').value
+      const email = document.getElementById('email').value
+      const lock = document.getElementById('lock').value
+      if (!username.trim() || !email.trim()) {
+        alert('نام کاربری و ایمیل الزامی است')
+        return
+      }
+      const r = await generateLicense(username, email, lock)
+      document.getElementById('license').value = r.license
+      document.getElementById('lockOut').value = r.lock
+      document.getElementById('lock').value = r.lock
+    }
+
+    document.getElementById('copy').onclick = async () => {
+      const u = document.getElementById('username').value.trim()
+      const e = document.getElementById('email').value.trim()
+      const l = document.getElementById('lockOut').value
+      const lic = document.getElementById('license').value
+      const text = 'Username: ' + u + '\nEmail: ' + e + '\nLock: ' + l + '\nLicense:\n' + lic
+      await navigator.clipboard.writeText(text)
+      const el = document.getElementById('copied')
+      el.style.display = 'block'
+      setTimeout(() => { el.style.display = 'none' }, 1500)
+    }
+  </script>
+</body>
+</html>
