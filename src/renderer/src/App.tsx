@@ -1,29 +1,59 @@
 import { useState, useEffect } from 'react'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import { motion } from 'framer-motion'
-import { Settings, Brain, Power, Instagram, Zap } from 'lucide-react'
+import { Settings, Brain, Power, Instagram, Zap, Play, Timer, RefreshCw } from 'lucide-react'
 import InstagramPanel from './components/InstagramPanel'
 import SettingsPanel from './components/SettingsPanel'
 import { cn } from './lib/utils'
+import { autoReplyController } from './lib/autoReplyController'
 
 type TabId = 'settings' | 'memory' | 'rules'
 
 function App(): JSX.Element {
   const [activeTab, setActiveTab] = useState<TabId>('settings')
   const [autoReplyEnabled, setAutoReplyEnabled] = useState(false)
+  const [autoCycle, setAutoCycle] = useState(true)
+  const [cycleMinutes, setCycleMinutes] = useState(1)
   const [isReady, setIsReady] = useState(false)
 
   useEffect(() => {
-    window.api.getStore('autoReplyEnabled').then((val) => {
-      setAutoReplyEnabled(Boolean(val))
+    void (async () => {
+      const [en, cycle, interval] = await Promise.all([
+        window.api.getStore('autoReplyEnabled'),
+        window.api.getStore('autoCycle'),
+        window.api.getStore('cycleIntervalMs')
+      ])
+      setAutoReplyEnabled(Boolean(en))
+      setAutoCycle(cycle !== false)
+      if (typeof interval === 'number') setCycleMinutes(Math.max(0.25, interval / 60000))
+      autoReplyController.setAutoCycle(cycle !== false)
+      if (typeof interval === 'number') autoReplyController.setCycleIntervalMs(interval)
       setIsReady(true)
-    })
+    })()
   }, [])
 
   const toggleAutoReply = async () => {
     const next = !autoReplyEnabled
     setAutoReplyEnabled(next)
     await window.api.setStore('autoReplyEnabled', next)
+  }
+
+  const toggleAutoCycle = async () => {
+    const next = !autoCycle
+    setAutoCycle(next)
+    await window.api.setStore('autoCycle', next)
+    autoReplyController.setAutoCycle(next)
+  }
+
+  const onCycleMinutesChange = async (m: number) => {
+    setCycleMinutes(m)
+    const ms = Math.round(m * 60_000)
+    await window.api.setStore('cycleIntervalMs', ms)
+    autoReplyController.setCycleIntervalMs(ms)
+  }
+
+  const onForceRun = () => {
+    autoReplyController.forceRun()
   }
 
   if (!isReady) {
@@ -54,8 +84,8 @@ function App(): JSX.Element {
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden">
-      <header className="panel-glass z-20 flex h-13 shrink-0 items-center justify-between px-4">
-        <div className="flex items-center gap-3">
+      <header className="panel-glass z-20 flex h-13 shrink-0 items-center justify-between gap-2 px-3">
+        <div className="flex items-center gap-2.5">
           <div className="relative flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br from-purple-500 via-fuchsia-500 to-pink-500 shadow-md shadow-purple-500/25">
             <Instagram className="h-4 w-4 text-white" strokeWidth={2.2} />
           </div>
@@ -65,10 +95,10 @@ function App(): JSX.Element {
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center justify-end gap-1.5">
           <div
             className={cn(
-              'flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-medium',
+              'flex items-center gap-1.5 rounded-full px-2 py-1 text-[10px] font-medium',
               autoReplyEnabled
                 ? 'bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/25'
                 : 'bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))]'
@@ -86,15 +116,59 @@ function App(): JSX.Element {
           <button
             onClick={toggleAutoReply}
             className={cn(
-              'flex items-center gap-2 rounded-full px-3.5 py-1.5 text-xs font-medium transition-all',
+              'flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[11px] font-medium transition-all',
               autoReplyEnabled
                 ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
                 : 'bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))]'
             )}
           >
             <Power className="h-3.5 w-3.5" />
-            {autoReplyEnabled ? 'پاسخ‌گویی روشن' : 'پاسخ‌گویی خاموش'}
+            {autoReplyEnabled ? 'روشن' : 'خاموش'}
           </button>
+
+          <button
+            onClick={onForceRun}
+            disabled={!autoReplyEnabled}
+            className={cn(
+              'flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[11px] font-medium',
+              autoReplyEnabled
+                ? 'bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30 hover:bg-sky-500/25'
+                : 'cursor-not-allowed bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))] opacity-50'
+            )}
+            title="اجرای فوری قابلیت‌های فعال"
+          >
+            <Play className="h-3.5 w-3.5" />
+            اجرا فورس
+          </button>
+
+          <button
+            onClick={toggleAutoCycle}
+            className={cn(
+              'flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[11px] font-medium',
+              autoCycle
+                ? 'bg-violet-500/15 text-violet-300 ring-1 ring-violet-500/30'
+                : 'bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))]'
+            )}
+            title="چرخه خودکار دوره‌ای"
+          >
+            <RefreshCw className={cn('h-3.5 w-3.5', autoCycle && 'animate-spin-slow')} />
+            {autoCycle ? 'اتوماتیک' : 'دستی'}
+          </button>
+
+          <div className="flex items-center gap-1 rounded-full bg-[hsl(var(--secondary))] px-2 py-1 text-[10px]">
+            <Timer className="h-3 w-3 text-[hsl(var(--muted-foreground))]" />
+            <input
+              type="number"
+              min={0.25}
+              max={30}
+              step={0.25}
+              value={cycleMinutes}
+              onChange={(e) => void onCycleMinutesChange(Number(e.target.value) || 1)}
+              className="w-10 border-0 bg-transparent text-center text-[11px] outline-none"
+              title="فاصله چرخه (دقیقه)"
+            />
+            <span className="text-[hsl(var(--muted-foreground))]">دقیقه</span>
+          </div>
         </div>
       </header>
 

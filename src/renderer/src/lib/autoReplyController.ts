@@ -19,7 +19,7 @@ interface PendingItem extends IncomingMessage {
 }
 
 type WebviewLike = Electron.WebviewTag
-type TaskKind = 'open_conv' | 'reply_dm' | 'reply_comment' | 'open_activity_item'
+type TaskKind = 'open_first_unread' | 'force_scan' | 'reply_dm' | 'reply_comment' | 'open_activity_item' | 'back_inbox'
 
 interface Task {
   id: string
@@ -28,8 +28,12 @@ interface Task {
   payload: Record<string, unknown>
 }
 
+const MAX_LOG = 200
+
 export class AutoReplyController {
   private enabled = false
+  private autoCycle = true
+  private cycleIntervalMs = 60_000
   private memory = ''
   private logic = ''
   private processing = false
@@ -48,7 +52,8 @@ export class AutoReplyController {
 
   private tasks: Task[] = []
   private lastCycleAt = 0
-  private phase: 'idle' | 'dms' | 'notifs' | 'follows' | 'listening' = 'idle'
+  private phase: 'idle' | 'dms' | 'notifs' | 'listening' = 'idle'
+  private unreadPass = 0
 
   setEnabled(v: boolean): void {
     if (this.enabled === v) return
@@ -57,20 +62,24 @@ export class AutoReplyController {
     if (v) {
       this.phase = 'idle'
       this.lastCycleAt = 0
-      this.tasks = []
     }
   }
 
+  setAutoCycle(v: boolean): void {
+    this.autoCycle = v
+    this.pushActivity('info', v ? 'چرخه خودکار روشن' : 'چرخه خودکار خاموش (فقط Force Run)')
+  }
+
+  setCycleIntervalMs(ms: number): void {
+    this.cycleIntervalMs = Math.max(15_000, Math.min(30 * 60_000, ms))
+  }
+
   setMemory(m: string): void {
-    const next = m || ''
-    if (this.memory === next) return
-    this.memory = next
+    this.memory = m || ''
   }
 
   setLogic(l: string): void {
-    const next = l || ''
-    if (this.logic === next) return
-    this.logic = next
+    this.logic = l || ''
   }
 
   setFlags(flags: Partial<FeatureFlags>): void {
@@ -83,6 +92,20 @@ export class AutoReplyController {
 
   setKeywordRules(rules: KeywordRule[]): void {
     this.keywordRules = Array.isArray(rules) ? rules : []
+  }
+
+  /** Manual trigger from header */
+  forceRun(): void {
+    if (!this.enabled) {
+      this.pushActivity('warn', 'اول پاسخ‌گویی را روشن کنید')
+      return
+    }
+    this.pushActivity('info', '▶ اجرای فورس شروع شد')
+    this.lastCycleAt = 0
+    this.phase = 'idle'
+    this.tasks = []
+    this.unreadPass = 0
+    void this.maybeScheduleCycle(true)
   }
 
   getActivities(): ActivityItem[] {
@@ -102,7 +125,7 @@ export class AutoReplyController {
       message,
       at: Date.now()
     }
-    this.activities = [item, ...this.activities].slice(0, 80)
+    this.activities = [item, ...this.activities].slice(0, MAX_LOG)
     this.listeners.forEach((fn) => fn(this.getActivities()))
   }
 
@@ -198,8 +221,8 @@ export class AutoReplyController {
 
       await this.runDueTasks()
 
-      if (this.enabled && !this.processing && this.tasks.length === 0) {
-        await this.maybeScheduleCycle()
+      if (this.enabled && this.autoCycle && !this.processing && this.tasks.length === 0) {
+        await this.maybeScheduleCycle(false)
       }
     } catch {
       // ignore
@@ -214,8 +237,8 @@ export class AutoReplyController {
     this.pushActivity(
       'info',
       item.channel === 'dm'
-        ? `پیام unread در صف: ${item.text.slice(0, 40)}…`
-        : `کامنت در صف: ${item.text.slice(0, 40)}…`
+        ? `پیام در صف: ${item.text.slice(0, 42)}…`
+        : `کامنت در صف: ${item.text.slice(0, 42)}…`
     )
     this.enqueueTask(
       item.channel === 'dm' ? 'reply_dm' : 'reply_comment',
@@ -236,7 +259,7 @@ export class AutoReplyController {
       for (const task of due) {
         this.tasks = this.tasks.filter((t) => t.id !== task.id)
         await this.executeTask(task)
-        await sleep(400)
+        await sleep(350)
       }
     } finally {
       this.processing = false
@@ -245,15 +268,68 @@ export class AutoReplyController {
 
   private async executeTask(task: Task): Promise<void> {
     switch (task.kind) {
-      case 'open_conv': {
-        const index = Number(task.payload['index'] ?? 0)
-        const preview = String(task.payload['preview'] || '')
-        this.pushActivity('info', `باز کردن unread #${index + 1}: ${preview.slice(0, 40)}`)
-        const res = await this.exec<{ ok?: boolean; via?: string; reason?: string; total?: number }>(
-          `window.__TE_IG_OPEN_CONV_INDEX__ ? window.__TE_IG_OPEN_CONV_INDEX__(${index}) : ({ok:false})`
+      case 'open_first_unread': {
+        const res = await this.exec<{
+          ok?: boolean
+          via?: string
+          reason?: string
+          total?: number
+          preview?: string
+        }>('window.__TE_IG_OPEN_FIRST_UNREAD__ ? window.__TE_IG_OPEN_FIRST_UNREAD__() : ({ok:false})')
+        if (!res?.ok) {
+          this.pushActivity('info', `unread باقی نماند (${res?.reason || 'ok'})`)
+          this.unreadPass = 99
+        } else {
+          this.pushActivity('info', `باز شد: ${(res.preview || '').slice(0, 48)} (مانده≈${(res.total || 1) - 1})`)
+          // force scan after DOM settles
+          this.enqueueTask('force_scan', {}, 2800)
+          this.enqueueTask('force_scan', {}, 5000)
+          // return inbox later to continue chain
+          this.enqueueTask('back_inbox', {}, 10000)
+        }
+        break
+      }
+      case 'force_scan': {
+        const info = await this.exec<{ dmNodes?: number; queued?: number; method?: string }>(
+          'window.__TE_IG_FORCE_SCAN_THREAD__ ? window.__TE_IG_FORCE_SCAN_THREAD__() : null'
         )
-        if (!res?.ok) this.pushActivity('warn', `باز نشد: ${res?.reason || '?'} (unread=${res?.total ?? 0})`)
-        else this.pushActivity('info', `گفتگوی unread باز شد — اسکن پیام…`)
+        this.pushActivity(
+          'info',
+          `اسکن اجباری: ${info?.dmNodes ?? 0} حباب / ${info?.queued ?? 0} صف (${info?.method || '?'})`
+        )
+        // drain pending immediately
+        const batch =
+          (await this.exec<Array<{ id: string; text: string; kind: string }>>(
+            'window.__TE_IG_POLL__ ? window.__TE_IG_POLL__() : []'
+          )) || []
+        for (const item of batch) {
+          if (item.kind === 'dm_incoming' && this.flags.autoReplyDms) {
+            this.scheduleReply({
+              id: item.id,
+              text: item.text,
+              timestamp: Date.now(),
+              channel: 'dm'
+            })
+          }
+        }
+        break
+      }
+      case 'back_inbox': {
+        await this.exec('window.__TE_IG_GOTO__ && window.__TE_IG_GOTO__("/direct/inbox/")')
+        await sleep(2500)
+        this.unreadPass += 1
+        if (this.unreadPass < 10 && this.flags.autoReplyDms) {
+          const list =
+            (await this.exec<Array<{ preview: string }>>(
+              'window.__TE_IG_LIST_CONVERSATIONS__ ? window.__TE_IG_LIST_CONVERSATIONS__() : []'
+            )) || []
+          if (list.length) {
+            this.pushActivity('info', `ادامه unread: ${list.length} مورد`)
+            this.enqueueTask('open_first_unread', {}, 800)
+          } else {
+            this.pushActivity('info', 'همه unreadهای این پاس بررسی شد')
+          }
+        }
         break
       }
       case 'reply_dm': {
@@ -271,45 +347,35 @@ export class AutoReplyController {
       case 'open_activity_item': {
         const href = String(task.payload['href'] || '')
         const text = String(task.payload['text'] || '')
-        this.pushActivity('info', `باز کردن نوتیف: ${text.slice(0, 40)}`)
+        this.pushActivity('info', `نوتیف: ${text.slice(0, 40)}`)
         await this.exec(`window.__TE_IG_OPEN_HREF__ && window.__TE_IG_OPEN_HREF__(${JSON.stringify(href)})`)
         break
       }
     }
   }
 
-  private async maybeScheduleCycle(): Promise<void> {
+  private async maybeScheduleCycle(force: boolean): Promise<void> {
     const now = Date.now()
-    if (now - this.lastCycleAt < 55000 && this.phase === 'listening') return
+    if (!force && now - this.lastCycleAt < this.cycleIntervalMs && this.phase === 'listening') return
     if (this.tasks.length > 0) return
     this.lastCycleAt = now
+    this.unreadPass = 0
 
     if (this.flags.autoReplyDms && this.flags.walkUnreadDms) {
       this.phase = 'dms'
-      this.pushActivity('info', 'بررسی دایرکت‌های unread…')
+      this.pushActivity('info', force ? 'فورس: بررسی unread…' : 'بررسی دایرکت‌های unread…')
       await this.exec('window.__TE_IG_GOTO__ && window.__TE_IG_GOTO__("/direct/inbox/")')
-      await sleep(4000)
+      await sleep(3500)
 
       const list =
-        (await this.exec<Array<{ index: number; preview: string; href?: string }>>(
+        (await this.exec<Array<{ preview: string }>>(
           'window.__TE_IG_LIST_CONVERSATIONS__ ? window.__TE_IG_LIST_CONVERSATIONS__() : []'
         )) || []
 
-      this.pushActivity(
-        'info',
-        list.length ? `${list.length} گفتگوی unread پیدا شد` : 'دایرکت unread نیست'
-      )
+      this.pushActivity('info', list.length ? `${list.length} گفتگوی unread` : 'دایرکت unread نیست')
 
-      list.slice(0, 8).forEach((c, i) => {
-        this.enqueueTask(
-          'open_conv',
-          { index: c.index ?? i, preview: c.preview, href: c.href },
-          500 + i * 9000
-        )
-      })
-
-      if (list.length && this.flags.autoReplyNotifications) {
-        // notifs after dms finish roughly
+      if (list.length) {
+        this.enqueueTask('open_first_unread', {}, 600)
         this.phase = 'listening'
         return
       }
@@ -319,19 +385,11 @@ export class AutoReplyController {
       this.phase = 'notifs'
       this.pushActivity('info', 'بررسی نوتیفیکیشن…')
       await this.exec('window.__TE_IG_OPEN_ACTIVITY_UI__ && window.__TE_IG_OPEN_ACTIVITY_UI__()')
-      await sleep(3500)
-      let acts =
+      await sleep(3000)
+      const acts =
         (await this.exec<Array<{ href: string; text: string }>>(
           'window.__TE_IG_LIST_ACTIVITY__ ? window.__TE_IG_LIST_ACTIVITY__() : []'
         )) || []
-      if (!acts.length) {
-        await this.exec('window.__TE_IG_GOTO__ && window.__TE_IG_GOTO__("/accounts/activity/")')
-        await sleep(3000)
-        acts =
-          (await this.exec<Array<{ href: string; text: string }>>(
-            'window.__TE_IG_LIST_ACTIVITY__ ? window.__TE_IG_LIST_ACTIVITY__() : []'
-          )) || []
-      }
       this.pushActivity('info', acts.length ? `${acts.length} مورد فعالیت` : 'فعالیتی پیدا نشد')
       acts.slice(0, 5).forEach((a, i) => {
         this.enqueueTask(
@@ -344,7 +402,7 @@ export class AutoReplyController {
 
     if (this.flags.acceptFollowRequests) {
       await this.exec('window.__TE_IG_OPEN_ACTIVITY_UI__ && window.__TE_IG_OPEN_ACTIVITY_UI__()')
-      await sleep(2000)
+      await sleep(1500)
       const res = await this.exec<{ accepted?: number }>(
         `window.__TE_IG_ACCEPT_FOLLOWS__ ? window.__TE_IG_ACCEPT_FOLLOWS__(${this.flags.followBack ? 'true' : 'false'}) : ({accepted:0})`
       )
@@ -370,7 +428,7 @@ export class AutoReplyController {
       const liked = await this.exec<{ ok?: boolean }>(
         'window.__TE_IG_LIKE_SHARED__ ? window.__TE_IG_LIKE_SHARED__() : ({ok:false})'
       )
-      if (liked?.ok) this.pushActivity('success', 'محتوای اشتراکی لایک شد')
+      if (liked?.ok) this.pushActivity('success', 'لایک شد')
     }
 
     const sent = await this.sendDm(result.text)

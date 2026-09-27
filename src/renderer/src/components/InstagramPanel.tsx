@@ -1,6 +1,16 @@
 import { useRef, useEffect, useState, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Instagram, RefreshCw, ArrowLeft, ArrowRight, Activity, ChevronDown, ChevronUp } from 'lucide-react'
+import {
+  Instagram,
+  RefreshCw,
+  ArrowLeft,
+  ArrowRight,
+  Activity,
+  ChevronDown,
+  ChevronUp,
+  Copy,
+  Check
+} from 'lucide-react'
 import { cn } from '../lib/utils'
 import { INJECTOR_SOURCE } from '../lib/instagramInjector'
 import { autoReplyController, type ActivityItem } from '../lib/autoReplyController'
@@ -13,6 +23,8 @@ export default function InstagramPanel(): JSX.Element {
   const [canGoForward, setCanGoForward] = useState(false)
   const [activities, setActivities] = useState<ActivityItem[]>([])
   const [logOpen, setLogOpen] = useState(true)
+  const [copiedId, setCopiedId] = useState<string | null>(null)
+  const [copiedAll, setCopiedAll] = useState(false)
 
   const injectMonitor = useCallback(async () => {
     const wv = webviewRef.current
@@ -38,7 +50,9 @@ export default function InstagramPanel(): JSX.Element {
       window.api.getStore('keywordRules'),
       window.api.getStore('walkUnreadDms'),
       window.api.getStore('acceptFollowRequests'),
-      window.api.getStore('followBack')
+      window.api.getStore('followBack'),
+      window.api.getStore('autoCycle'),
+      window.api.getStore('cycleIntervalMs')
     ])
     const [
       enabled,
@@ -56,12 +70,16 @@ export default function InstagramPanel(): JSX.Element {
       kwRules,
       walk,
       accept,
-      fb
+      fb,
+      autoCycle,
+      cycleMs
     ] = vals
 
     autoReplyController.setEnabled(Boolean(enabled))
     autoReplyController.setMemory(typeof memory === 'string' ? memory : '')
     autoReplyController.setLogic(typeof logic === 'string' ? logic : '')
+    autoReplyController.setAutoCycle(autoCycle !== false)
+    if (typeof cycleMs === 'number') autoReplyController.setCycleIntervalMs(cycleMs)
     autoReplyController.setFlags({
       autoReplyDms: dms !== false,
       autoReplyComments: comments !== false,
@@ -125,6 +143,36 @@ export default function InstagramPanel(): JSX.Element {
     }
   }, [injectMonitor])
 
+  const formatLine = (a: ActivityItem): string => {
+    const t = new Date(a.at).toLocaleTimeString('fa-IR', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    })
+    return `${t}\t[${a.level}]\t${a.message}`
+  }
+
+  const copyOne = async (a: ActivityItem) => {
+    try {
+      await navigator.clipboard.writeText(formatLine(a))
+      setCopiedId(a.id)
+      setTimeout(() => setCopiedId(null), 1200)
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const copyAll = async () => {
+    try {
+      const text = activities.map(formatLine).join('\n')
+      await navigator.clipboard.writeText(text)
+      setCopiedAll(true)
+      setTimeout(() => setCopiedAll(false), 1500)
+    } catch {
+      /* ignore */
+    }
+  }
+
   const levelColor = (level: ActivityItem['level']): string => {
     if (level === 'success') return 'text-emerald-400'
     if (level === 'warn') return 'text-amber-400'
@@ -182,20 +230,44 @@ export default function InstagramPanel(): JSX.Element {
             exit={{ height: 0, opacity: 0 }}
             className="overflow-hidden border-b border-white/[0.06] bg-black/90"
           >
-            <div className="max-h-44 space-y-1 overflow-y-auto px-3 py-2">
+            <div className="flex items-center justify-between border-b border-white/[0.04] px-3 py-1">
+              <span className="text-[10px] text-white/35">{activities.length} ردیف (حداکثر ۲۰۰)</span>
+              <button
+                onClick={() => void copyAll()}
+                className="flex items-center gap-1 rounded px-2 py-0.5 text-[10px] text-white/60 hover:bg-white/10 hover:text-white"
+              >
+                {copiedAll ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+                {copiedAll ? 'کپی شد' : 'کپی همه'}
+              </button>
+            </div>
+            <div className="max-h-52 space-y-0.5 overflow-y-auto px-2 py-1.5">
               {activities.length === 0 ? (
-                <p className="text-[11px] text-white/35">منتظر رویداد…</p>
+                <p className="px-1 text-[11px] text-white/35">منتظر رویداد…</p>
               ) : (
-                activities.slice(0, 22).map((a) => (
-                  <div key={a.id} className="flex gap-2 text-[11px]">
-                    <span className="shrink-0 tabular-nums text-white/30">
+                activities.map((a) => (
+                  <div
+                    key={a.id}
+                    className="group flex items-start gap-1.5 rounded px-1 py-0.5 hover:bg-white/[0.04]"
+                  >
+                    <span className="shrink-0 tabular-nums text-[10px] text-white/30">
                       {new Date(a.at).toLocaleTimeString('fa-IR', {
                         hour: '2-digit',
                         minute: '2-digit',
                         second: '2-digit'
                       })}
                     </span>
-                    <span className={cn(levelColor(a.level))}>{a.message}</span>
+                    <span className={cn('min-w-0 flex-1 text-[11px]', levelColor(a.level))}>{a.message}</span>
+                    <button
+                      onClick={() => void copyOne(a)}
+                      className="shrink-0 rounded p-0.5 text-white/20 opacity-0 group-hover:opacity-100 hover:text-white/70"
+                      title="کپی این خط"
+                    >
+                      {copiedId === a.id ? (
+                        <Check className="h-3 w-3 text-emerald-400" />
+                      ) : (
+                        <Copy className="h-3 w-3" />
+                      )}
+                    </button>
                   </div>
                 ))
               )}
