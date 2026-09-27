@@ -13,7 +13,8 @@ import {
   Trash2,
   Zap,
   Inbox,
-  UserPlus
+  UserPlus,
+  Bell
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import type { KeywordRule } from '../lib/types'
@@ -34,7 +35,6 @@ function newRule(): KeywordRule {
   }
 }
 
-/** RTL-friendly switch: ON = green track + thumb on the start side (right in RTL) */
 function ToggleSwitch({
   checked,
   onChange,
@@ -60,10 +60,10 @@ function ToggleSwitch({
         aria-checked={checked}
         role="switch"
       >
-        <span className="h-4 w-4 rounded-full bg-white shadow-sm transition-transform" />
+        <span className="h-4 w-4 rounded-full bg-white shadow-sm" />
       </div>
       <div className="min-w-0 flex-1">
-        <p className="text-[12px] font-medium text-[hsl(var(--foreground))]">{label}</p>
+        <p className="text-[12px] font-medium">{label}</p>
         <p className="mt-0.5 text-[11px] leading-relaxed text-[hsl(var(--muted-foreground))]">{desc}</p>
       </div>
     </button>
@@ -73,11 +73,13 @@ function ToggleSwitch({
 export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.Element {
   const [memory, setMemory] = useState('')
   const [replyDelaySec, setReplyDelaySec] = useState(2.5)
+  const [autoReplyDms, setAutoReplyDms] = useState(true)
+  const [autoReplyComments, setAutoReplyComments] = useState(true)
+  const [autoReplyNotifications, setAutoReplyNotifications] = useState(true)
   const [replyOwnPostComments, setReplyOwnPostComments] = useState(true)
   const [replyMentions, setReplyMentions] = useState(true)
   const [keywordRulesEnabled, setKeywordRulesEnabled] = useState(true)
   const [walkUnreadDms, setWalkUnreadDms] = useState(true)
-  const [checkNotifications, setCheckNotifications] = useState(true)
   const [acceptFollowRequests, setAcceptFollowRequests] = useState(false)
   const [followBack, setFollowBack] = useState(false)
   const [rules, setRules] = useState<KeywordRule[]>([])
@@ -91,11 +93,13 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
       const keys = [
         'memory',
         'replyDelayMs',
+        'autoReplyDms',
+        'autoReplyComments',
+        'autoReplyNotifications',
         'replyOwnPostComments',
         'replyMentions',
         'keywordRulesEnabled',
         'walkUnreadDms',
-        'checkNotifications',
         'acceptFollowRequests',
         'followBack',
         'keywordRules'
@@ -104,11 +108,13 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
       const map = Object.fromEntries(keys.map((k, i) => [k, vals[i]]))
       if (typeof map.memory === 'string') setMemory(map.memory)
       if (typeof map.replyDelayMs === 'number') setReplyDelaySec(map.replyDelayMs / 1000)
+      if (typeof map.autoReplyDms === 'boolean') setAutoReplyDms(map.autoReplyDms)
+      if (typeof map.autoReplyComments === 'boolean') setAutoReplyComments(map.autoReplyComments)
+      if (typeof map.autoReplyNotifications === 'boolean') setAutoReplyNotifications(map.autoReplyNotifications)
       if (typeof map.replyOwnPostComments === 'boolean') setReplyOwnPostComments(map.replyOwnPostComments)
       if (typeof map.replyMentions === 'boolean') setReplyMentions(map.replyMentions)
       if (typeof map.keywordRulesEnabled === 'boolean') setKeywordRulesEnabled(map.keywordRulesEnabled)
       if (typeof map.walkUnreadDms === 'boolean') setWalkUnreadDms(map.walkUnreadDms)
-      if (typeof map.checkNotifications === 'boolean') setCheckNotifications(map.checkNotifications)
       if (typeof map.acceptFollowRequests === 'boolean') setAcceptFollowRequests(map.acceptFollowRequests)
       if (typeof map.followBack === 'boolean') setFollowBack(map.followBack)
       if (Array.isArray(map.keywordRules)) setRules(map.keywordRules as KeywordRule[])
@@ -125,11 +131,13 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
 
   const handleSaveSettings = async () => {
     await window.api.setStore('replyDelayMs', Math.round(replyDelaySec * 1000))
+    await window.api.setStore('autoReplyDms', autoReplyDms)
+    await window.api.setStore('autoReplyComments', autoReplyComments)
+    await window.api.setStore('autoReplyNotifications', autoReplyNotifications)
     await window.api.setStore('replyOwnPostComments', replyOwnPostComments)
     await window.api.setStore('replyMentions', replyMentions)
     await window.api.setStore('keywordRulesEnabled', keywordRulesEnabled)
     await window.api.setStore('walkUnreadDms', walkUnreadDms)
-    await window.api.setStore('checkNotifications', checkNotifications)
     await window.api.setStore('acceptFollowRequests', acceptFollowRequests)
     await window.api.setStore('followBack', followBack)
     setSettingsSaved(true)
@@ -143,8 +151,7 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
     setTimeout(() => setRulesSaved(false), 2000)
   }
 
-  const charCount = memory.length
-  const charPercent = Math.min(100, (charCount / MAX_MEMORY_CHARS) * 100)
+  const charPercent = Math.min(100, (memory.length / MAX_MEMORY_CHARS) * 100)
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -157,6 +164,30 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
             exit={{ opacity: 0, y: -6 }}
             className="flex h-full flex-col gap-4 overflow-y-auto p-4"
           >
+            <section className="space-y-2">
+              <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
+                قابلیت‌های اصلی
+              </h3>
+              <ToggleSwitch
+                checked={autoReplyDms}
+                onChange={setAutoReplyDms}
+                label="پاسخ‌گویی دایرکت"
+                desc="پیام‌های Direct را می‌خواند و پاسخ می‌دهد."
+              />
+              <ToggleSwitch
+                checked={autoReplyComments}
+                onChange={setAutoReplyComments}
+                label="پاسخ‌گویی کامنت"
+                desc="کامنت‌های روی پست را پاسخ می‌دهد."
+              />
+              <ToggleSwitch
+                checked={autoReplyNotifications}
+                onChange={setAutoReplyNotifications}
+                label="پاسخ‌گویی نوتیفیکیشن"
+                desc="از صفحه فعالیت، منشن و کامنت را باز و پاسخ می‌دهد."
+              />
+            </section>
+
             <section>
               <h3 className="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
                 <Timer className="h-3.5 w-3.5 text-purple-400" />
@@ -188,33 +219,27 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
               <ToggleSwitch
                 checked={walkUnreadDms}
                 onChange={setWalkUnreadDms}
-                label="پیمایش خودکار خوانده‌نشده‌ها"
-                desc="لیست inbox را می‌گردد، هر unread را باز می‌کند، پاسخ می‌دهد، بعدی."
+                label="پیمایش خودکار گفتگوها"
+                desc="inbox را می‌گردد و گفتگوها را یکی‌یکی باز می‌کند."
               />
             </section>
 
             <section className="space-y-2">
               <h3 className="mb-1 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
                 <MessageSquare className="h-3.5 w-3.5 text-pink-400" />
-                کامنت و نوتیف
+                جزئیات کامنت
               </h3>
               <ToggleSwitch
                 checked={replyOwnPostComments}
                 onChange={setReplyOwnPostComments}
-                label="پاسخ به کامنت پست‌های خودم"
-                desc="روی صفحه پست، کامنت‌های جدید را جواب می‌دهد."
+                label="کامنت پست‌های خودم"
+                desc="روی صفحه پست خودتان."
               />
               <ToggleSwitch
                 checked={replyMentions}
                 onChange={setReplyMentions}
-                label="پاسخ به منشن"
-                desc="اگر در کامنت منشن شدید پاسخ می‌دهد."
-              />
-              <ToggleSwitch
-                checked={checkNotifications}
-                onChange={setCheckNotifications}
-                label="بررسی نوتیفیکیشن"
-                desc="صفحه فعالیت را برای کامنت و منشن چک می‌کند."
+                label="منشن در کامنت"
+                desc="اگر منشن شدید."
               />
             </section>
 
@@ -227,13 +252,13 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
                 checked={acceptFollowRequests}
                 onChange={setAcceptFollowRequests}
                 label="تأیید درخواست فالو"
-                desc="درخواست‌های معلّق را Confirm می‌کند."
+                desc="Confirm روی درخواست‌های معلّق."
               />
               <ToggleSwitch
                 checked={followBack}
                 onChange={setFollowBack}
-                label="فالو بک بعد از تأیید"
-                desc="فقط وقتی گزینه بالا روشن باشد."
+                label="فالو بک"
+                desc="بعد از تأیید."
               />
             </section>
 
@@ -244,9 +269,12 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
               {settingsSaved ? 'ذخیره شد' : 'ذخیره تنظیمات'}
             </button>
 
-            <div className="card flex gap-2 text-[11px] leading-relaxed text-[hsl(var(--muted-foreground))]">
+            <div className="card flex gap-2 text-[11px] text-[hsl(var(--muted-foreground))]">
               <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sky-400" />
-              <p>سوییچ روشن = سبز و دایره سمت راست؛ خاموش = خاکستری و دایره سمت چپ.</p>
+              <p>
+                برای تست دایرکت: یک گفتگو را دستی باز کنید و لاگ «اسکن: X حباب» را ببینید. اگر حباب ۰ است، DOM
+                پیام را نمی‌بیند.
+              </p>
             </div>
           </motion.div>
         )}
@@ -259,7 +287,7 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
             exit={{ opacity: 0, y: -6 }}
             className="flex h-full flex-col p-4"
           >
-            <div className="mb-3 flex items-center justify-between gap-2">
+            <div className="mb-3 flex items-center justify-between">
               <h3 className="flex items-center gap-2 text-[13px] font-semibold">
                 <Brain className="h-4 w-4 text-violet-400" />
                 حافظه
@@ -282,14 +310,11 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
               dir="rtl"
             />
             <div className="mt-2.5 h-1 overflow-hidden rounded-full bg-[hsl(var(--muted))]">
-              <motion.div
-                className="h-full rounded-full bg-[hsl(var(--primary))]"
-                animate={{ width: `${charPercent}%` }}
-              />
+              <motion.div className="h-full rounded-full bg-[hsl(var(--primary))]" animate={{ width: `${charPercent}%` }} />
             </div>
             <div className="mt-3 flex gap-2 rounded-xl border border-violet-500/15 bg-violet-500/[0.06] px-3 py-2.5">
               <Lightbulb className="h-3.5 w-3.5 shrink-0 text-violet-400" />
-              <p className="text-[11px] text-violet-200/80">هر خط یک واقعیت؛ پاسخ‌ها متنوع ساخته می‌شوند.</p>
+              <p className="text-[11px] text-violet-200/80">هر خط یک واقعیت.</p>
             </div>
           </motion.div>
         )}
@@ -318,7 +343,7 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
               checked={keywordRulesEnabled}
               onChange={setKeywordRulesEnabled}
               label="فعال‌سازی قوانین"
-              desc="کلمه خاص در کامنت → پاسخ کامنت + دایرکت"
+              desc="کلمه در کامنت → پاسخ + دایرکت"
             />
             {rules.map((rule, idx) => (
               <div key={rule.id} className="card space-y-2">
@@ -370,7 +395,7 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
             </button>
             <div className="flex gap-2 rounded-xl border border-amber-500/15 bg-amber-500/[0.06] px-3 py-2.5">
               <AtSign className="h-3.5 w-3.5 shrink-0 text-amber-400" />
-              <p className="text-[11px] text-amber-100/70">دایرکت بعد از کلیدواژه best-effort است.</p>
+              <p className="text-[11px] text-amber-100/70">دایرکت کلیدواژه best-effort است.</p>
             </div>
           </motion.div>
         )}

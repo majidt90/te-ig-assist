@@ -26,24 +26,28 @@ export default function InstagramPanel(): JSX.Element {
       enabled,
       memory,
       delay,
+      dms,
+      comments,
+      notifs,
       own,
       mentions,
       kwOn,
       kwRules,
       walk,
-      notif,
       accept,
       fb
     ] = await Promise.all([
       window.api.getStore('autoReplyEnabled'),
       window.api.getStore('memory'),
       window.api.getStore('replyDelayMs'),
+      window.api.getStore('autoReplyDms'),
+      window.api.getStore('autoReplyComments'),
+      window.api.getStore('autoReplyNotifications'),
       window.api.getStore('replyOwnPostComments'),
       window.api.getStore('replyMentions'),
       window.api.getStore('keywordRulesEnabled'),
       window.api.getStore('keywordRules'),
       window.api.getStore('walkUnreadDms'),
-      window.api.getStore('checkNotifications'),
       window.api.getStore('acceptFollowRequests'),
       window.api.getStore('followBack')
     ])
@@ -51,11 +55,13 @@ export default function InstagramPanel(): JSX.Element {
     autoReplyController.setMemory(typeof memory === 'string' ? memory : '')
     if (typeof delay === 'number') autoReplyController.setReplyDelay(delay)
     autoReplyController.setFlags({
+      autoReplyDms: dms !== false,
+      autoReplyComments: comments !== false,
+      autoReplyNotifications: notifs !== false,
       replyOwnPostComments: own !== false,
       replyMentions: mentions !== false,
       keywordRulesEnabled: kwOn !== false,
       walkUnreadDms: walk !== false,
-      checkNotifications: notif !== false,
       acceptFollowRequests: Boolean(accept),
       followBack: Boolean(fb)
     })

@@ -8,11 +8,13 @@ const store = new Store({
     memory: '',
     autoReplyEnabled: false,
     replyDelayMs: 2500,
+    autoReplyDms: true,
+    autoReplyComments: true,
+    autoReplyNotifications: true,
     replyOwnPostComments: true,
     replyMentions: true,
     keywordRulesEnabled: true,
     walkUnreadDms: true,
-    checkNotifications: true,
     acceptFollowRequests: false,
     followBack: false,
     keywordRules: [],
@@ -42,11 +44,14 @@ function createTrayIcon(): Electron.NativeImage {
       const dist = Math.sqrt(dx * dx + dy * dy)
       if (dist > radius + 0.5) continue
       const t = (x + y) / (size * 2)
-      const r = Math.round(168 + (236 - 168) * t)
-      const g = Math.round(85 + (72 - 85) * t)
-      const b = Math.round(247 + (153 - 247) * t)
-      const alpha = dist > radius - 0.8 ? Math.round(255 * (1 - (dist - (radius - 0.8)) / 1.3)) : 255
-      setPixel(x, y, r, g, b, Math.max(0, alpha))
+      setPixel(
+        x,
+        y,
+        Math.round(168 + (236 - 168) * t),
+        Math.round(85 + (72 - 85) * t),
+        Math.round(247 + (153 - 247) * t),
+        dist > radius - 0.8 ? Math.round(255 * (1 - (dist - (radius - 0.8)) / 1.3)) : 255
+      )
     }
   }
   return nativeImage.createFromBuffer(buf, { width: size, height: size })
