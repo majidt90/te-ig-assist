@@ -1,7 +1,5 @@
 /**
- * Rule-based reply engine.
- * Uses the user-defined "memory" text as knowledge base.
- * Phase-1: heuristics + keyword matching (no external LLM).
+ * Rule-based reply engine using user memory.
  */
 
 export interface IncomingMessage {
@@ -10,13 +8,18 @@ export interface IncomingMessage {
   timestamp: number
 }
 
-const GREETINGS = ['سلام', 'salam', 'hi', 'hello', 'درود', 'هی', 'hey']
+const GREETINGS = ['سلام', 'salam', 'hi', 'hello', 'درود', 'هی', 'hey', 'سلامت']
 const PRICE_KEYS = ['قیمت', 'چنده', 'چند', 'price', 'هزینه', 'چقدر']
 const TIME_KEYS = ['ساعت', 'باز', 'بسته', 'وقت', 'کاری', 'hours', 'open']
 const THANKS_KEYS = ['ممنون', 'مرسی', 'تشکر', 'thanks', 'thank']
+const NAME_KEYS = ['اسمت', 'اسم شما', 'اسمتون', 'کی هستی', 'who are you', 'your name', 'نامت', 'نام شما']
 
 function normalize(s: string): string {
-  return s.trim().toLowerCase().replace(/\s+/g, ' ')
+  return s
+    .trim()
+    .toLowerCase()
+    .replace(/[؟?!.،,]/g, ' ')
+    .replace(/\s+/g, ' ')
 }
 
 function memoryLines(memory: string): string[] {
@@ -26,12 +29,26 @@ function memoryLines(memory: string): string[] {
     .filter(Boolean)
 }
 
+function findNameLine(lines: string[]): string | null {
+  for (const line of lines) {
+    const n = normalize(line)
+    // «من مجیدم» / «اسم من مجید است» / «من X هستم»
+    if (n.includes('اسم') || /^من\s+\S+/.test(n) || n.includes('هستم') || n.includes('هستم')) {
+      // Prefer short identity lines
+      if (line.length < 80) return line
+    }
+  }
+  // First line often is identity
+  if (lines[0] && lines[0].length < 60) return lines[0]
+  return null
+}
+
 function findRelevantLines(memory: string, incoming: string): string[] {
   const lines = memoryLines(memory)
   if (lines.length === 0) return []
 
   const q = normalize(incoming)
-  const words = q.split(' ').filter((w) => w.length > 2)
+  const words = q.split(' ').filter((w) => w.length > 1)
 
   const scored = lines.map((line) => {
     const ln = normalize(line)
@@ -39,9 +56,8 @@ function findRelevantLines(memory: string, incoming: string): string[] {
     for (const w of words) {
       if (ln.includes(w)) score += 2
     }
-    // boost common intents
-    if (PRICE_KEYS.some((k) => q.includes(k)) && PRICE_KEYS.some((k) => ln.includes(k))) score += 3
-    if (TIME_KEYS.some((k) => q.includes(k)) && TIME_KEYS.some((k) => ln.includes(k))) score += 3
+    if (PRICE_KEYS.some((k) => q.includes(k)) && PRICE_KEYS.some((k) => ln.includes(k))) score += 4
+    if (TIME_KEYS.some((k) => q.includes(k)) && TIME_KEYS.some((k) => ln.includes(k))) score += 4
     return { line, score }
   })
 
@@ -52,37 +68,36 @@ function findRelevantLines(memory: string, incoming: string): string[] {
     .map((x) => x.line)
 }
 
-/**
- * Generate a Persian reply based on memory + incoming text.
- */
 export function generateReply(incomingText: string, memory: string): string {
   const text = incomingText.trim()
   const q = normalize(text)
   const lines = memoryLines(memory)
 
-  // Greeting
-  if (GREETINGS.some((g) => q === g || q.startsWith(g + ' ') || q.startsWith(g + '!'))) {
-    const intro = lines[0] ? `سلام 👋\n${lines[0]}` : 'سلام 👋 خوش اومدید! چطور می‌تونم کمکتون کنم؟'
-    return intro
+  // Greeting only
+  if (GREETINGS.some((g) => q === g || q === g + ' ' || q.startsWith(g + ' '))) {
+    if (lines[0]) return `سلام 👋\n${lines[0]}`
+    return 'سلام 👋 خوش اومدید! چطور می‌تونم کمکتون کنم؟'
   }
 
-  // Thanks
+  // Name question
+  if (NAME_KEYS.some((k) => q.includes(normalize(k))) || q.includes('اسم')) {
+    const nameLine = findNameLine(lines)
+    if (nameLine) return nameLine
+    return 'من دستیار این صفحه هستم 😊'
+  }
+
   if (THANKS_KEYS.some((k) => q.includes(k))) {
     return 'خواهش می‌کنم 🌟 اگر سوال دیگه‌ای داشتید در خدمتم.'
   }
 
-  // Memory-driven answer
   if (lines.length > 0) {
     const relevant = findRelevantLines(memory, text)
-    if (relevant.length > 0) {
-      return relevant.join('\n')
-    }
+    if (relevant.length > 0) return relevant.join('\n')
 
-    // Generic helpful reply with memory context hint
     if (PRICE_KEYS.some((k) => q.includes(k))) {
       const priceLine = lines.find((l) => PRICE_KEYS.some((k) => normalize(l).includes(k)))
       if (priceLine) return priceLine
-      return 'برای اعلام دقیق قیمت، لطفاً بفرمایید کدوم محصول مدنظرتونه؟'
+      return 'برای اعلام دقیق قیمت بفرمایید کدوم مورد مدنظرتونه؟'
     }
 
     if (TIME_KEYS.some((k) => q.includes(k))) {
@@ -90,10 +105,9 @@ export function generateReply(incomingText: string, memory: string): string {
       if (timeLine) return timeLine
     }
 
-    // Fallback: short polite + first memory line as context
-    return `پیامتون رو دریافت کردم ✅\n${lines[0]}\nاگر جزئیات بیشتری بفرستید بهتر راهنمایی می‌کنم.`
+    // Default: use first memory line as identity + polite ack
+    return `${lines[0]}\nپیامتون رو دیدم ✅ اگر سوال دیگه‌ای دارید بپرسید.`
   }
 
-  // No memory configured
-  return 'سلام، پیام شما دریافت شد. به زودی پاسخ می‌دیم 🌸'
+  return 'پیام شما دریافت شد ✅'
 }
