@@ -1,5 +1,7 @@
 /**
- * Instagram guest injector — improved unread + activity detection.
+ * Instagram guest injector.
+ * Critical fix: after opening a thread, bootstrap must NOT drop unanswered
+ * incoming messages — only messages AFTER our last outgoing are queued.
  */
 
 export const INJECTOR_SOURCE = `
@@ -8,10 +10,10 @@ export const INJECTOR_SOURCE = `
   window.__TE_IG_SEEN__ = SEEN;
   var PENDING = window.__TE_IG_PENDING__ || [];
   window.__TE_IG_PENDING__ = PENDING;
-  var bootstrapped = window.__TE_IG_BOOTSTRAPPED__ === true;
   var lastSendAt = 0;
   var MIN_SEND_GAP_MS = 4500;
   var lastSentText = '';
+  var lastScanInfo = { path: '', dmNodes: 0, queued: 0, thread: false };
 
   function path() { return location.pathname || ''; }
   function isDirectPage() { return /\\/direct\\//i.test(path()); }
@@ -25,14 +27,18 @@ export const INJECTOR_SOURCE = `
 
   function markSeen(fp) {
     SEEN.add(fp);
-    if (SEEN.size > 1000) SEEN.delete(SEEN.values().next().value);
+    if (SEEN.size > 1200) SEEN.delete(SEEN.values().next().value);
   }
 
+  /** Outgoing = our bubbles (right side in LTR IG web) */
   function isProbablyOutgoing(el) {
     try {
       var rect = el.getBoundingClientRect();
       var vw = window.innerWidth || 800;
-      if (rect.left + rect.width / 2 > vw * 0.52) return true;
+      // Center of bubble in right 40% of viewport
+      var mid = rect.left + rect.width / 2;
+      if (mid > vw * 0.58) return true;
+      if (mid < vw * 0.42) return false;
     } catch (e) {}
     return false;
   }
@@ -46,12 +52,8 @@ export const INJECTOR_SOURCE = `
         var bg = st.backgroundColor || '';
         var w = parseFloat(st.width) || 0;
         var h = parseFloat(st.height) || 0;
-        // IG unread dot ~8px blue circle
         if (w >= 4 && w <= 14 && h >= 4 && h <= 14) {
-          if (bg.indexOf('0, 149, 246') !== -1 || bg.indexOf('0,149,246') !== -1 ||
-              bg.indexOf('55, 151, 240') !== -1 || bg.indexOf('0, 55, 107') !== -1) {
-            return true;
-          }
+          if (/0,?\\s*149,?\\s*246|55,?\\s*151,?\\s*240/.test(bg)) return true;
         }
       } catch (e) {}
     }
@@ -74,26 +76,77 @@ export const INJECTOR_SOURCE = `
         if (seenEl.has(el)) continue;
         seenEl.add(el);
         var text = (el.innerText || '').trim();
-        if (!text || text.length > 1500) continue;
-        if (/^(Send|ارسال|Like|Seen|Active|Message)/i.test(text)) continue;
-        if (lastSentText && text.indexOf(lastSentText.slice(0, 40)) !== -1) continue;
+        if (!text || text.length < 1 || text.length > 1500) continue;
+        if (/^(Send|ارسال|Like|Seen|Active now|Active|Message|Enter)/i.test(text)) continue;
+        if (/^[0-9]{1,2}:[0-9]{2}/.test(text) && text.length < 14) continue;
+        if (lastSentText && text === lastSentText) continue;
+        // skip pure username-looking short labels sometimes
         out.push({ el: el, text: text });
       }
     }
     return out;
   }
 
+  /**
+   * Core fix:
+   * Build ordered list of message-like nodes, find last OUTGOING index,
+   * queue every INCOMING message after that (unanswered tail).
+   * Older messages only markSeen.
+   */
   function scanDms() {
-    if (!isDirectPage() || !isThread()) return;
-    var nodes = collectDmCandidates().slice(-20);
+    if (!isDirectPage() || !isThread()) {
+      lastScanInfo = { path: path(), dmNodes: 0, queued: 0, thread: false };
+      return;
+    }
+
+    var nodes = collectDmCandidates();
+    lastScanInfo = { path: path(), dmNodes: nodes.length, queued: 0, thread: true };
+
+    if (!nodes.length) return;
+
+    // Determine outgoing/incoming for each
+    var classified = [];
     for (var i = 0; i < nodes.length; i++) {
-      var item = nodes[i];
+      var outg = isProbablyOutgoing(nodes[i].el);
+      classified.push({ text: nodes[i].text, outgoing: outg, el: nodes[i].el });
+    }
+
+    // Last outgoing index
+    var lastOut = -1;
+    for (var j = 0; j < classified.length; j++) {
+      if (classified[j].outgoing) lastOut = j;
+    }
+
+    // If we never sent in this view, only take the last 1–3 incoming (avoid flooding old history)
+    var startIdx = lastOut + 1;
+    if (lastOut < 0) {
+      // no outgoing visible — only last incoming message
+      startIdx = Math.max(0, classified.length - 1);
+    }
+
+    for (var k = 0; k < classified.length; k++) {
+      var item = classified[k];
       var fp = fingerprint(item.text, 'dm');
+
+      if (k < startIdx || item.outgoing) {
+        markSeen(fp);
+        continue;
+      }
+
+      // incoming after last outgoing
       if (SEEN.has(fp)) continue;
       markSeen(fp);
-      if (!bootstrapped) continue;
-      if (isProbablyOutgoing(item.el)) continue;
-      PENDING.push({ id: fp, text: item.text, kind: 'dm_incoming', channel: 'dm' });
+
+      // skip if looks like our last sent
+      if (lastSentText && item.text.indexOf(lastSentText.slice(0, 30)) !== -1) continue;
+
+      PENDING.push({
+        id: fp,
+        text: item.text,
+        kind: 'dm_incoming',
+        channel: 'dm'
+      });
+      lastScanInfo.queued++;
     }
   }
 
@@ -122,12 +175,12 @@ export const INJECTOR_SOURCE = `
   function scanComments() {
     if (!isPostPage()) return;
     var comments = collectComments().slice(-40);
+    // unanswered: take last few not yet seen
     for (var i = 0; i < comments.length; i++) {
       var c = comments[i];
       var fp = fingerprint((c.username || '') + ':' + c.text, 'cmt');
       if (SEEN.has(fp)) continue;
       markSeen(fp);
-      if (!bootstrapped) continue;
       PENDING.push({
         id: fp, text: c.text, kind: 'comment', channel: 'comment',
         username: c.username || '', isMention: /@/.test(c.text), path: path()
@@ -138,10 +191,6 @@ export const INJECTOR_SOURCE = `
   function scan() {
     try { scanDms(); } catch (e) {}
     try { scanComments(); } catch (e) {}
-    if (!bootstrapped) {
-      bootstrapped = true;
-      window.__TE_IG_BOOTSTRAPPED__ = true;
-    }
   }
 
   window.__TE_IG_POLL__ = function () {
@@ -157,28 +206,25 @@ export const INJECTOR_SOURCE = `
       ready: true,
       path: path(),
       seen: SEEN.size,
-      bootstrapped: bootstrapped,
       direct: isDirectPage(),
       inbox: isInbox(),
       thread: isThread(),
-      post: isPostPage()
+      post: isPostPage(),
+      lastScan: lastScanInfo
     };
   };
 
-  /** Unread threads in inbox */
   window.__TE_IG_LIST_UNREAD__ = function () {
     var items = [];
     var seenHref = {};
-
-    // Prefer anchors to threads
     var anchors = document.querySelectorAll('a[href*="/direct/t/"]');
+
     for (var i = 0; i < anchors.length; i++) {
       var a = anchors[i];
       var href = a.getAttribute('href') || '';
       if (!href || seenHref[href]) continue;
       seenHref[href] = true;
 
-      // Walk up to conversation row
       var row = a;
       for (var up = 0; up < 6; up++) {
         if (!row.parentElement) break;
@@ -186,7 +232,7 @@ export const INJECTOR_SOURCE = `
         if (row.getAttribute && (row.getAttribute('role') === 'button' || row.getAttribute('role') === 'listitem')) break;
       }
 
-      var text = (row.innerText || a.innerText || '').trim();
+      var text = (row.innerText || a.innerText || '').replace(/\\s+/g, ' ').trim();
       var blue = hasBlueUnreadIndicator(row);
       var bold = false;
       try {
@@ -197,25 +243,20 @@ export const INJECTOR_SOURCE = `
         }
       } catch (e) {}
 
-      var aria = (row.getAttribute('aria-label') || '') + ' ' + (a.getAttribute('aria-label') || '');
-      var unreadHint = /unread|خوانده|جدید|new message/i.test(aria + ' ' + text);
-
-      // Include if unread signals OR (fallback) first 8 conversations when any signal weak
-      if (blue || bold || unreadHint) {
-        items.push({ href: href, preview: text.replace(/\\s+/g, ' ').slice(0, 90), index: items.length, reason: blue ? 'dot' : bold ? 'bold' : 'aria' });
+      if (blue || bold) {
+        items.push({ href: href, preview: text.slice(0, 90), index: items.length, reason: blue ? 'dot' : 'bold' });
       }
     }
 
-    // Fallback: if nothing flagged, take top conversations (user says they have msgs)
+    // Always provide top conversations as fallback so walker can open them
     if (items.length === 0) {
       seenHref = {};
-      var all = document.querySelectorAll('a[href*="/direct/t/"]');
-      for (var j = 0; j < all.length && items.length < 6; j++) {
-        var href2 = all[j].getAttribute('href') || '';
-        if (!href2 || seenHref[href2]) continue;
-        seenHref[href2] = true;
-        var prev = (all[j].innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 90);
-        items.push({ href: href2, preview: prev, index: items.length, reason: 'fallback_top' });
+      for (var j = 0; j < anchors.length && items.length < 8; j++) {
+        var h2 = anchors[j].getAttribute('href') || '';
+        if (!h2 || seenHref[h2]) continue;
+        seenHref[h2] = true;
+        var p2 = (anchors[j].innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 90);
+        items.push({ href: h2, preview: p2, index: items.length, reason: 'top' });
       }
     }
 
@@ -234,52 +275,21 @@ export const INJECTOR_SOURCE = `
     return true;
   };
 
-  /**
-   * Activity / notifications feed — comments, mentions, replies.
-   * Matches rows like "mentioned you in a comment", "replied to your comment".
-   */
   window.__TE_IG_LIST_ACTIVITY__ = function () {
     var out = [];
     var seen = {};
-
-    // Strategy 1: links to posts/reels inside activity rows
     var links = document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]');
     for (var i = 0; i < links.length; i++) {
       var link = links[i];
       var href = link.getAttribute('href') || '';
       if (!href || seen[href]) continue;
-
-      var row = link.closest('div[role="button"]') || link.closest('a') || link.parentElement;
-      var text = '';
-      try {
-        text = (row && row.innerText ? row.innerText : link.innerText || '').replace(/\\s+/g, ' ').trim();
-      } catch (e) { text = ''; }
-
-      var interesting = /mention|mentioned|comment|replied|tagged|کامنت|منشن|پاسخ|ذکر|تگ|replied to your/i.test(text);
-      // Always include post links on activity pages; prefer interesting ones first
       seen[href] = true;
-      out.push({
-        href: href,
-        text: text.slice(0, 140),
-        isComment: interesting || true,
-        score: interesting ? 2 : 1
-      });
+      var row = link.closest('div[role="button"]') || link.parentElement;
+      var text = '';
+      try { text = (row && row.innerText ? row.innerText : link.innerText || '').replace(/\\s+/g, ' ').trim(); } catch (e) {}
+      var interesting = /mention|mentioned|comment|replied|tagged|کامنت|منشن|پاسخ|ذکر/i.test(text);
+      out.push({ href: href, text: text.slice(0, 140), isComment: true, score: interesting ? 2 : 1 });
     }
-
-    // Strategy 2: clickable rows without direct /p/ in outer link
-    var rows = document.querySelectorAll('div[role="button"]');
-    for (var r = 0; r < rows.length; r++) {
-      var rowEl = rows[r];
-      var t = (rowEl.innerText || '').replace(/\\s+/g, ' ').trim();
-      if (!/mention|mentioned|comment|replied|tagged|کامنت|منشن|پاسخ/i.test(t)) continue;
-      var inner = rowEl.querySelector('a[href*="/p/"], a[href*="/reel/"]');
-      if (!inner) continue;
-      var h = inner.getAttribute('href') || '';
-      if (!h || seen[h]) continue;
-      seen[h] = true;
-      out.push({ href: h, text: t.slice(0, 140), isComment: true, score: 3 });
-    }
-
     out.sort(function (a, b) { return (b.score || 0) - (a.score || 0); });
     return out.slice(0, 12);
   };
@@ -397,11 +407,9 @@ export const INJECTOR_SOURCE = `
     return { ok: true, accepted: accepted };
   };
 
-  // Click heart / notifications in nav if present
   window.__TE_IG_OPEN_ACTIVITY_UI__ = function () {
     var links = document.querySelectorAll('a[href="/accounts/activity/"], a[href*="activity"], a[href="/notifications/"]');
     if (links.length) { links[0].click(); return true; }
-    // SVG heart in nav
     var nav = document.querySelectorAll('a[role="link"], div[role="link"]');
     for (var i = 0; i < nav.length; i++) {
       var al = (nav[i].getAttribute('aria-label') || '') + ' ' + (nav[i].innerText || '');
@@ -413,6 +421,16 @@ export const INJECTOR_SOURCE = `
     location.href = 'https://www.instagram.com/accounts/activity/';
     return true;
   };
+
+  // Force re-scan when path changes without full reload (SPA)
+  var lastPath = path();
+  setInterval(function () {
+    if (path() !== lastPath) {
+      lastPath = path();
+      // allow DOM to settle then scan — unanswered tail logic handles history
+      setTimeout(function () { try { scan(); } catch (e) {} }, 1200);
+    }
+  }, 800);
 
   try { scan(); } catch (e) {}
   if (!window.__TE_IG_OBSERVER__) {

@@ -19,7 +19,6 @@ interface PendingItem extends IncomingMessage {
 }
 
 type WebviewLike = Electron.WebviewTag
-
 type CyclePhase = 'idle' | 'unread_dms' | 'notifications' | 'follows' | 'listening'
 
 export class AutoReplyController {
@@ -45,6 +44,8 @@ export class AutoReplyController {
   private lastCycleAt = 0
   private unreadQueue: Array<{ href: string; preview: string }> = []
   private activityQueue: Array<{ href: string; text: string }> = []
+  private threadWaitUntil = 0
+  private lastScanLogAt = 0
 
   setEnabled(v: boolean): void {
     if (this.enabled === v) return
@@ -99,7 +100,7 @@ export class AutoReplyController {
     this.webview = webview
     this.injectorSource = injectorSource
     if (this.pollTimer) clearInterval(this.pollTimer)
-    this.pollTimer = setInterval(() => void this.tick(), 2000)
+    this.pollTimer = setInterval(() => void this.tick(), 1800)
   }
 
   unbindWebview(): void {
@@ -136,11 +137,22 @@ export class AutoReplyController {
         inbox?: boolean
         thread?: boolean
         post?: boolean
+        lastScan?: { dmNodes?: number; queued?: number; thread?: boolean }
       }>('window.__TE_IG_STATUS__ ? window.__TE_IG_STATUS__() : null')
 
       if (status?.ready && !this.readyLogged) {
         this.readyLogged = true
         this.pushActivity('info', `مانیتور آماده — ${status.path || '?'}`)
+      }
+
+      // Debug scan stats occasionally while in a thread
+      if (status?.thread && status.lastScan && Date.now() - this.lastScanLogAt > 8000) {
+        this.lastScanLogAt = Date.now()
+        const ls = status.lastScan
+        this.pushActivity(
+          'info',
+          `اسکن گفتگو: ${ls.dmNodes || 0} حباب، ${ls.queued || 0} در صف`
+        )
       }
 
       if (this.pendingDmAfterNav && status?.path?.includes(`/${this.pendingDmAfterNav.username}`)) {
@@ -183,6 +195,9 @@ export class AutoReplyController {
 
       await this.processQueue()
 
+      // Wait after opening a thread so messages can be scanned
+      if (Date.now() < this.threadWaitUntil) return
+
       if (this.enabled && !this.processing && this.queue.length === 0) {
         await this.runCycleStep(status)
       }
@@ -191,7 +206,7 @@ export class AutoReplyController {
     }
   }
 
-  private async runCycleStep(_status: { path?: string; inbox?: boolean; thread?: boolean } | null): Promise<void> {
+  private async runCycleStep(status: { path?: string; thread?: boolean } | null): Promise<void> {
     if (this.cycleRunning) return
     const now = Date.now()
 
@@ -203,18 +218,19 @@ export class AutoReplyController {
 
         if (this.flags.walkUnreadDms) {
           this.phase = 'unread_dms'
-          this.pushActivity('info', 'بررسی دایرکت‌های خوانده‌نشده…')
+          this.pushActivity('info', 'بررسی دایرکت‌ها…')
           await this.exec('window.__TE_IG_GOTO__ && window.__TE_IG_GOTO__("/direct/inbox/")')
           await sleep(3500)
           const unread =
-            (await this.exec<Array<{ href: string; preview: string; reason?: string }>>(
+            (await this.exec<Array<{ href: string; preview: string }>>(
               'window.__TE_IG_LIST_UNREAD__ ? window.__TE_IG_LIST_UNREAD__() : []'
             )) || []
           this.unreadQueue = unread
-          if (unread.length) {
-            this.pushActivity('info', `${unread.length} گفتگو برای بررسی پیدا شد`)
-          } else {
-            this.pushActivity('info', 'گفتگویی در inbox پیدا نشد')
+          this.pushActivity(
+            'info',
+            unread.length ? `${unread.length} گفتگو در صف باز شدن` : 'هیچ گفتگویی در لیست پیدا نشد'
+          )
+          if (!unread.length) {
             this.phase = this.flags.checkNotifications
               ? 'notifications'
               : this.flags.acceptFollowRequests
@@ -232,77 +248,72 @@ export class AutoReplyController {
 
       if (this.phase === 'unread_dms' && this.unreadQueue.length > 0) {
         const next = this.unreadQueue.shift()!
-        this.pushActivity('info', `باز کردن گفتگو: ${next.preview.slice(0, 42)}…`)
+        this.pushActivity('info', `باز کردن: ${next.preview.slice(0, 48) || next.href}…`)
         await this.exec(`window.__TE_IG_OPEN_HREF__ && window.__TE_IG_OPEN_HREF__(${JSON.stringify(next.href)})`)
-        await sleep(3500)
-        // allow a few poll ticks to enqueue messages
+        // Give thread time to load + be scanned by poll ticks
+        this.threadWaitUntil = Date.now() + 6000
         return
       }
 
       if (this.phase === 'unread_dms' && this.unreadQueue.length === 0) {
-        this.phase = this.flags.checkNotifications
-          ? 'notifications'
-          : this.flags.acceptFollowRequests
-            ? 'follows'
-            : 'listening'
+        // If currently on a thread with no queue, move on
+        if (status?.thread) {
+          this.phase = this.flags.checkNotifications
+            ? 'notifications'
+            : this.flags.acceptFollowRequests
+              ? 'follows'
+              : 'listening'
+        }
       }
 
       if (this.phase === 'notifications') {
-        this.pushActivity('info', 'بررسی نوتیفیکیشن / فعالیت…')
-        // Prefer clicking heart icon (same UI user sees)
+        this.pushActivity('info', 'بررسی نوتیفیکیشن…')
         await this.exec('window.__TE_IG_OPEN_ACTIVITY_UI__ && window.__TE_IG_OPEN_ACTIVITY_UI__()')
         await sleep(3500)
-
         let acts =
-          (await this.exec<Array<{ href: string; text: string; isComment?: boolean }>>(
+          (await this.exec<Array<{ href: string; text: string }>>(
             'window.__TE_IG_LIST_ACTIVITY__ ? window.__TE_IG_LIST_ACTIVITY__() : []'
           )) || []
-
         if (!acts.length) {
           await this.exec('window.__TE_IG_GOTO__ && window.__TE_IG_GOTO__("/accounts/activity/")')
           await sleep(3000)
           acts =
-            (await this.exec<Array<{ href: string; text: string; isComment?: boolean }>>(
+            (await this.exec<Array<{ href: string; text: string }>>(
               'window.__TE_IG_LIST_ACTIVITY__ ? window.__TE_IG_LIST_ACTIVITY__() : []'
             )) || []
         }
-
         this.activityQueue = acts.slice(0, 8)
         if (this.activityQueue.length) {
-          this.pushActivity('info', `${this.activityQueue.length} مورد فعالیت پیدا شد`)
+          this.pushActivity('info', `${this.activityQueue.length} مورد فعالیت`)
           const a = this.activityQueue.shift()!
-          this.pushActivity('info', `باز کردن: ${a.text.slice(0, 50)}…`)
           await this.exec(`window.__TE_IG_OPEN_HREF__ && window.__TE_IG_OPEN_HREF__(${JSON.stringify(a.href)})`)
-          await sleep(3500)
+          this.threadWaitUntil = Date.now() + 5000
         } else {
-          this.pushActivity('warn', 'در صفحه فعالیت لینک پست/کامنت پیدا نشد — UI اینستاگرام ممکن است عوض شده باشد')
+          this.pushActivity('warn', 'لینک پست در activity پیدا نشد')
         }
         this.phase = this.flags.acceptFollowRequests ? 'follows' : 'listening'
         return
       }
 
       if (this.phase === 'follows') {
-        this.pushActivity('info', 'بررسی درخواست‌های فالو…')
+        this.pushActivity('info', 'بررسی درخواست فالو…')
         await this.exec('window.__TE_IG_OPEN_ACTIVITY_UI__ && window.__TE_IG_OPEN_ACTIVITY_UI__()')
-        await sleep(2500)
-        // Click "Follow requests" row if visible
+        await sleep(2000)
         await this.exec(`
           (function(){
             var nodes = Array.from(document.querySelectorAll('div[role="button"], a, span'));
             var row = nodes.find(function(n){
-              var t = (n.innerText || '').trim();
-              return /Follow requests|درخواست‌های دنبال|درخواست فالو/i.test(t);
+              return /Follow requests|درخواست/i.test((n.innerText || '').trim());
             });
             if (row) row.click();
           })()
         `)
-        await sleep(2000)
+        await sleep(1500)
         const res = await this.exec<{ accepted?: number }>(
           `window.__TE_IG_ACCEPT_FOLLOWS__ ? window.__TE_IG_ACCEPT_FOLLOWS__(${this.flags.followBack ? 'true' : 'false'}) : ({accepted:0})`
         )
         const n = res?.accepted || 0
-        if (n > 0) this.pushActivity('success', `${n} درخواست فالو تأیید شد`)
-        else this.pushActivity('info', 'دکمه Confirm روی صفحه دیده نشد')
+        this.pushActivity(n > 0 ? 'success' : 'info', n > 0 ? `${n} تأیید شد` : 'Confirm دیده نشد')
         this.phase = 'listening'
         await this.exec('window.__TE_IG_GOTO__ && window.__TE_IG_GOTO__("/direct/inbox/")')
       }
@@ -317,7 +328,8 @@ export class AutoReplyController {
     if (this.queue.some((q) => q.id === item.id)) return
     if (item.channel === 'dm') {
       const norm = item.text.replace(/\s+/g, ' ').trim()
-      if (this.queue.some((q) => q.channel === 'dm' && q.text.replace(/\s+/g, ' ').trim() === norm)) return
+      if (this.queue.some((q) => q.channel === 'dm' && q.text.replace(/\s+/g, ' ').trim() === norm))
+        return
     }
 
     this.queue.push(item)
@@ -361,12 +373,7 @@ export class AutoReplyController {
     if (!this.enabled) return
     const result = await this.sendDm(reply)
     if (result.ok) {
-      this.pushActivity(
-        'success',
-        result.reason === 'cooldown_ok' || result.reason === 'already_sent'
-          ? 'پاسخ ارسال شد (بدون تکرار)'
-          : 'پاسخ ارسال شد'
-      )
+      this.pushActivity('success', 'پاسخ ارسال شد')
     } else if (result.reason === 'no_compose') {
       this.repliedIds.delete(msg.id)
       this.pushActivity('warn', 'باکس پیام پیدا نشد')
