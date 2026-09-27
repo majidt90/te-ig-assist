@@ -23,7 +23,7 @@ function App(): JSX.Element {
 
   useEffect(() => {
     void (async () => {
-      const [en, cycle, interval, activated, u, e, lock, key] = await Promise.all([
+      const [en, cycle, interval, activated, u, e, lock, key, exp] = await Promise.all([
         window.api.getStore('autoReplyEnabled'),
         window.api.getStore('autoCycle'),
         window.api.getStore('cycleIntervalMs'),
@@ -31,7 +31,8 @@ function App(): JSX.Element {
         window.api.getStore('licenseUsername'),
         window.api.getStore('licenseEmail'),
         window.api.getStore('licenseLock'),
-        window.api.getStore('licenseKey')
+        window.api.getStore('licenseKey'),
+        window.api.getStore('licenseExpiresAt')
       ])
       setAutoReplyEnabled(Boolean(en))
       setAutoCycle(cycle !== false)
@@ -39,9 +40,19 @@ function App(): JSX.Element {
       autoReplyController.setAutoCycle(cycle !== false)
       if (typeof interval === 'number') autoReplyController.setCycleIntervalMs(interval)
 
-      if (activated && typeof u === 'string' && typeof e === 'string' && typeof lock === 'string' && typeof key === 'string') {
-        const ok = await validateLicenseWithLock(u, e, lock, key)
+      if (
+        activated &&
+        typeof u === 'string' &&
+        typeof e === 'string' &&
+        typeof lock === 'string' &&
+        typeof key === 'string' &&
+        typeof exp === 'string'
+      ) {
+        const ok = await validateLicenseWithLock(u, e, lock, key, exp)
         setLicensed(ok.ok)
+        if (!ok.ok) {
+          await window.api.setStore('licenseActivated', false)
+        }
       } else {
         setLicensed(false)
       }
