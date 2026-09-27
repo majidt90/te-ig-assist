@@ -39,12 +39,12 @@
     "autoprefixer": "^10.4.20",
     "electron": "^33.2.1",
     "electron-builder": "^25.1.8",
-    "electron-vite": "^2.3.0",
+    "electron-vite": "^5.0.0",
     "eslint": "^9.17.0",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.7.2",
-    "vite": "^6.0.5"
+    "vite": "^5.4.11"
   },
   "build": {
     "appId": "com.majidt90.te-ig-assist",
