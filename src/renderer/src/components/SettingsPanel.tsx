@@ -4,7 +4,6 @@ import {
   Save,
   Brain,
   Info,
-  Sparkles,
   CheckCircle2,
   Lightbulb,
   Timer,
@@ -12,7 +11,10 @@ import {
   AtSign,
   Plus,
   Trash2,
-  Zap
+  Zap,
+  Inbox,
+  Bell,
+  UserPlus
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import type { KeywordRule } from '../lib/types'
@@ -39,6 +41,10 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
   const [replyOwnPostComments, setReplyOwnPostComments] = useState(true)
   const [replyMentions, setReplyMentions] = useState(true)
   const [keywordRulesEnabled, setKeywordRulesEnabled] = useState(true)
+  const [walkUnreadDms, setWalkUnreadDms] = useState(true)
+  const [checkNotifications, setCheckNotifications] = useState(true)
+  const [acceptFollowRequests, setAcceptFollowRequests] = useState(false)
+  const [followBack, setFollowBack] = useState(false)
   const [rules, setRules] = useState<KeywordRule[]>([])
   const [isSaving, setIsSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -47,20 +53,30 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
 
   useEffect(() => {
     void (async () => {
-      const [mem, delay, own, mentions, kwOn, kwRules] = await Promise.all([
-        window.api.getStore('memory'),
-        window.api.getStore('replyDelayMs'),
-        window.api.getStore('replyOwnPostComments'),
-        window.api.getStore('replyMentions'),
-        window.api.getStore('keywordRulesEnabled'),
-        window.api.getStore('keywordRules')
-      ])
-      if (typeof mem === 'string') setMemory(mem)
-      if (typeof delay === 'number') setReplyDelaySec(delay / 1000)
-      if (typeof own === 'boolean') setReplyOwnPostComments(own)
-      if (typeof mentions === 'boolean') setReplyMentions(mentions)
-      if (typeof kwOn === 'boolean') setKeywordRulesEnabled(kwOn)
-      if (Array.isArray(kwRules)) setRules(kwRules as KeywordRule[])
+      const keys = [
+        'memory',
+        'replyDelayMs',
+        'replyOwnPostComments',
+        'replyMentions',
+        'keywordRulesEnabled',
+        'walkUnreadDms',
+        'checkNotifications',
+        'acceptFollowRequests',
+        'followBack',
+        'keywordRules'
+      ] as const
+      const vals = await Promise.all(keys.map((k) => window.api.getStore(k)))
+      const map = Object.fromEntries(keys.map((k, i) => [k, vals[i]]))
+      if (typeof map.memory === 'string') setMemory(map.memory)
+      if (typeof map.replyDelayMs === 'number') setReplyDelaySec(map.replyDelayMs / 1000)
+      if (typeof map.replyOwnPostComments === 'boolean') setReplyOwnPostComments(map.replyOwnPostComments)
+      if (typeof map.replyMentions === 'boolean') setReplyMentions(map.replyMentions)
+      if (typeof map.keywordRulesEnabled === 'boolean') setKeywordRulesEnabled(map.keywordRulesEnabled)
+      if (typeof map.walkUnreadDms === 'boolean') setWalkUnreadDms(map.walkUnreadDms)
+      if (typeof map.checkNotifications === 'boolean') setCheckNotifications(map.checkNotifications)
+      if (typeof map.acceptFollowRequests === 'boolean') setAcceptFollowRequests(map.acceptFollowRequests)
+      if (typeof map.followBack === 'boolean') setFollowBack(map.followBack)
+      if (Array.isArray(map.keywordRules)) setRules(map.keywordRules as KeywordRule[])
     })()
   }, [])
 
@@ -77,6 +93,10 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
     await window.api.setStore('replyOwnPostComments', replyOwnPostComments)
     await window.api.setStore('replyMentions', replyMentions)
     await window.api.setStore('keywordRulesEnabled', keywordRulesEnabled)
+    await window.api.setStore('walkUnreadDms', walkUnreadDms)
+    await window.api.setStore('checkNotifications', checkNotifications)
+    await window.api.setStore('acceptFollowRequests', acceptFollowRequests)
+    await window.api.setStore('followBack', followBack)
     setSettingsSaved(true)
     setTimeout(() => setSettingsSaved(false), 2000)
   }
@@ -143,7 +163,7 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
                 <Timer className="h-3.5 w-3.5 text-purple-400" />
                 تأخیر پاسخ
               </h3>
-              <div className="card space-y-3">
+              <div className="card">
                 <div className="flex items-center gap-3">
                   <input
                     type="range"
@@ -163,20 +183,58 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
 
             <section className="space-y-2">
               <h3 className="mb-1 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
+                <Inbox className="h-3.5 w-3.5 text-sky-400" />
+                دایرکت
+              </h3>
+              <Toggle
+                checked={walkUnreadDms}
+                onChange={setWalkUnreadDms}
+                label="پیمایش خودکار خوانده‌نشده‌ها"
+                desc="لیست inbox را می‌گردد، هر unread را باز می‌کند، پاسخ می‌دهد، بعدی."
+              />
+            </section>
+
+            <section className="space-y-2">
+              <h3 className="mb-1 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
                 <MessageSquare className="h-3.5 w-3.5 text-pink-400" />
-                کامنت‌ها
+                کامنت و نوتیف
               </h3>
               <Toggle
                 checked={replyOwnPostComments}
                 onChange={setReplyOwnPostComments}
                 label="پاسخ به کامنت پست‌های خودم"
-                desc="وقتی روی پست خودتان هستید، کامنت‌های جدید پاسخ داده می‌شوند."
+                desc="روی صفحه پست، کامنت‌های جدید را جواب می‌دهد."
               />
               <Toggle
                 checked={replyMentions}
                 onChange={setReplyMentions}
-                label="پاسخ به منشن در کامنت"
-                desc="اگر در کامنت منشن شدید، بر اساس حافظه پاسخ می‌دهد."
+                label="پاسخ به منشن"
+                desc="اگر در کامنت منشن شدید پاسخ می‌دهد."
+              />
+              <Toggle
+                checked={checkNotifications}
+                onChange={setCheckNotifications}
+                label="بررسی نوتیفیکیشن"
+                desc="بعد از دایرکت‌ها، صفحه فعالیت را برای کامنت/منشن چک می‌کند."
+              />
+            </section>
+
+            <section className="space-y-2">
+              <h3 className="mb-1 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
+                <UserPlus className="h-3.5 w-3.5 text-emerald-400" />
+                فالوئر
+              </h3>
+              <Toggle
+                checked={acceptFollowRequests}
+                onChange={setAcceptFollowRequests}
+                label="تأیید درخواست فالو"
+                desc="درخواست‌های معلّق را Confirm می‌کند."
+              />
+              <Toggle
+                checked={followBack}
+                onChange={setFollowBack}
+                label="فالو بک بعد از تأیید"
+                desc="فقط وقتی گزینه بالا روشن باشد معنا دارد."
               />
             </section>
 
@@ -187,17 +245,12 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
               {settingsSaved ? 'ذخیره شد' : 'ذخیره تنظیمات'}
             </button>
 
-            <section>
-              <h3 className="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
-                <Info className="h-3.5 w-3.5 text-sky-400" />
-                نکات
-              </h3>
-              <div className="card space-y-2 text-[11px] leading-relaxed text-[hsl(var(--muted-foreground))]">
-                <p>• فقط پیام/کامنتهای <b className="text-white/70">جدید</b> بعد از روشن‌شدن مانیتور پاسخ داده می‌شوند.</p>
-                <p>• چند پیام پشت‌سرهم به‌ترتیب صف پردازش می‌شوند.</p>
-                <p>• برای کامنت: پست را باز کنید (`/p/` یا `/reel/`).</p>
-              </div>
-            </section>
+            <div className="card space-y-2 text-[11px] leading-relaxed text-[hsl(var(--muted-foreground))]">
+              <p className="flex items-start gap-2">
+                <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sky-400" />
+                هر پیام فقط یک‌بار پاسخ داده می‌شود. cooldown دیگر به‌عنوان خطا تکرار ارسال نمی‌کند.
+              </p>
+            </div>
           </motion.div>
         )}
 
@@ -212,13 +265,13 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
             <div className="mb-3 flex items-center justify-between gap-2">
               <h3 className="flex items-center gap-2 text-[13px] font-semibold">
                 <Brain className="h-4 w-4 text-violet-400" />
-                حافظه دستیار
+                حافظه
               </h3>
               <button
                 onClick={handleSaveMemory}
                 disabled={isSaving}
                 className={cn(
-                  'btn-primary !gap-1.5 !rounded-lg !px-3 !py-1.5 !text-[11px]',
+                  'btn-primary !px-3 !py-1.5 !text-[11px]',
                   saved && '!bg-emerald-500'
                 )}
               >
@@ -226,11 +279,6 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
                 {saved ? 'ذخیره شد' : 'ذخیره'}
               </button>
             </div>
-
-            <p className="mb-3 text-[11.5px] text-[hsl(var(--muted-foreground))]">
-              هر خط یک واقعیت. موتور پاسخ‌های متنوع و خلاقانه‌تر از همین خطوط می‌سازد.
-            </p>
-
             <textarea
               value={memory}
               onChange={(e) => {
@@ -238,26 +286,16 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
               }}
               className="input-field min-h-0 flex-1 resize-none leading-[1.7]"
               dir="rtl"
-              placeholder="من مجیدم\nفروشگاه لباس دارم\nقیمت از ۲۰۰ تا ۸۰۰ هزار..."
             />
-
-            <div className="mt-2.5 flex items-center gap-3">
-              <div className="h-1 flex-1 overflow-hidden rounded-full bg-[hsl(var(--muted))]">
-                <motion.div
-                  className={cn('h-full rounded-full', charPercent > 90 ? 'bg-amber-500' : 'bg-[hsl(var(--primary))]')}
-                  animate={{ width: `${charPercent}%` }}
-                />
-              </div>
-              <span className="text-[10px] tabular-nums text-[hsl(var(--muted-foreground))]">
-                {charCount.toLocaleString('fa-IR')}
-              </span>
+            <div className="mt-2.5 h-1 overflow-hidden rounded-full bg-[hsl(var(--muted))]">
+              <motion.div
+                className="h-full rounded-full bg-[hsl(var(--primary))]"
+                animate={{ width: `${charPercent}%` }}
+              />
             </div>
-
             <div className="mt-3 flex gap-2 rounded-xl border border-violet-500/15 bg-violet-500/[0.06] px-3 py-2.5">
-              <Lightbulb className="mt-0.5 h-3.5 w-3.5 shrink-0 text-violet-400" />
-              <p className="text-[11px] text-violet-200/80">
-                برای خلاقیت بیشتر: لحن، مثال قیمت، و چند واقعیت کوتاه بنویسید.
-              </p>
+              <Lightbulb className="h-3.5 w-3.5 shrink-0 text-violet-400" />
+              <p className="text-[11px] text-violet-200/80">هر خط یک واقعیت؛ پاسخ‌ها متنوع ساخته می‌شوند.</p>
             </div>
           </motion.div>
         )}
@@ -273,91 +311,71 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
             <div className="flex items-center justify-between">
               <h3 className="flex items-center gap-2 text-[13px] font-semibold">
                 <Zap className="h-4 w-4 text-amber-400" />
-                قوانین کلیدواژه
+                کلیدواژه
               </h3>
               <button
                 onClick={handleSaveRules}
                 className={cn('btn-primary !px-3 !py-1.5 !text-[11px]', rulesSaved && '!bg-emerald-500')}
               >
-                {rulesSaved ? 'ذخیره شد' : 'ذخیره قوانین'}
+                {rulesSaved ? 'ذخیره شد' : 'ذخیره'}
               </button>
             </div>
-
             <Toggle
               checked={keywordRulesEnabled}
               onChange={setKeywordRulesEnabled}
-              label="فعال‌سازی قوانین کلیدواژه"
-              desc="اگر کسی کلمه خاص کامنت کند → پاسخ کامنت + دایرکت اختیاری"
+              label="فعال‌سازی قوانین"
+              desc="کلمه خاص در کامنت → پاسخ کامنت + دایرکت"
             />
-
-            <p className="text-[11px] text-[hsl(var(--muted-foreground))]">
-              مثال: کلمه «قیمت» → کامنت: «دایرکت چک کنید» و دایرکت: لیست قیمت‌ها
-            </p>
-
-            <div className="space-y-3">
-              {rules.map((rule, idx) => (
-                <div key={rule.id} className="card space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[11px] font-medium text-[hsl(var(--muted-foreground))]">
-                      قانون {idx + 1}
-                    </span>
-                    <button
-                      onClick={() => setRules((r) => r.filter((x) => x.id !== rule.id))}
-                      className="rounded p-1 text-red-400/80 hover:bg-red-500/10"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                  <input
-                    className="input-field !py-1.5 text-[12px]"
-                    placeholder="کلمه کلیدی (مثلاً قیمت)"
-                    value={rule.keyword}
-                    onChange={(e) =>
-                      setRules((all) =>
-                        all.map((x) => (x.id === rule.id ? { ...x, keyword: e.target.value } : x))
-                      )
-                    }
-                  />
-                  <textarea
-                    className="input-field min-h-[56px] resize-none text-[12px]"
-                    placeholder="متن پاسخ کامنت"
-                    value={rule.commentReply}
-                    onChange={(e) =>
-                      setRules((all) =>
-                        all.map((x) =>
-                          x.id === rule.id ? { ...x, commentReply: e.target.value } : x
-                        )
-                      )
-                    }
-                  />
-                  <textarea
-                    className="input-field min-h-[56px] resize-none text-[12px]"
-                    placeholder="متن دایرکت (اختیاری)"
-                    value={rule.dmMessage}
-                    onChange={(e) =>
-                      setRules((all) =>
-                        all.map((x) => (x.id === rule.id ? { ...x, dmMessage: e.target.value } : x))
-                      )
-                    }
-                  />
+            {rules.map((rule, idx) => (
+              <div key={rule.id} className="card space-y-2">
+                <div className="flex justify-between">
+                  <span className="text-[11px] text-[hsl(var(--muted-foreground))]">قانون {idx + 1}</span>
+                  <button onClick={() => setRules((r) => r.filter((x) => x.id !== rule.id))}>
+                    <Trash2 className="h-3.5 w-3.5 text-red-400" />
+                  </button>
                 </div>
-              ))}
-            </div>
-
+                <input
+                  className="input-field !py-1.5 text-[12px]"
+                  placeholder="کلمه کلیدی"
+                  value={rule.keyword}
+                  onChange={(e) =>
+                    setRules((all) =>
+                      all.map((x) => (x.id === rule.id ? { ...x, keyword: e.target.value } : x))
+                    )
+                  }
+                />
+                <textarea
+                  className="input-field min-h-[52px] resize-none text-[12px]"
+                  placeholder="پاسخ کامنت"
+                  value={rule.commentReply}
+                  onChange={(e) =>
+                    setRules((all) =>
+                      all.map((x) => (x.id === rule.id ? { ...x, commentReply: e.target.value } : x))
+                    )
+                  }
+                />
+                <textarea
+                  className="input-field min-h-[52px] resize-none text-[12px]"
+                  placeholder="دایرکت (اختیاری)"
+                  value={rule.dmMessage}
+                  onChange={(e) =>
+                    setRules((all) =>
+                      all.map((x) => (x.id === rule.id ? { ...x, dmMessage: e.target.value } : x))
+                    )
+                  }
+                />
+              </div>
+            ))}
             <button
               onClick={() => setRules((r) => [...r, newRule()])}
               className="btn-ghost flex w-full items-center justify-center gap-2 border border-dashed border-[hsl(var(--border))] py-2 text-[12px]"
             >
               <Plus className="h-3.5 w-3.5" />
-              افزودن قانون
+              افزودن
             </button>
-
             <div className="flex gap-2 rounded-xl border border-amber-500/15 bg-amber-500/[0.06] px-3 py-2.5">
-              <AtSign className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-400" />
-              <p className="text-[11px] text-amber-100/70">
-                برای دایرکت بعد از کلیدواژه، اپ به پروفایل کاربر می‌رود و دکمه Message را می‌زند — ممکن
-                است گاهی نیاز به تأیید دستی باشد.
-              </p>
+              <AtSign className="h-3.5 w-3.5 shrink-0 text-amber-400" />
+              <p className="text-[11px] text-amber-100/70">دایرکت بعد از کلیدواژه best-effort است.</p>
             </div>
           </motion.div>
         )}

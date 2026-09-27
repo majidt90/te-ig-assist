@@ -22,14 +22,30 @@ export default function InstagramPanel(): JSX.Element {
   }, [])
 
   const syncStore = useCallback(async () => {
-    const [enabled, memory, delay, own, mentions, kwOn, kwRules] = await Promise.all([
+    const [
+      enabled,
+      memory,
+      delay,
+      own,
+      mentions,
+      kwOn,
+      kwRules,
+      walk,
+      notif,
+      accept,
+      fb
+    ] = await Promise.all([
       window.api.getStore('autoReplyEnabled'),
       window.api.getStore('memory'),
       window.api.getStore('replyDelayMs'),
       window.api.getStore('replyOwnPostComments'),
       window.api.getStore('replyMentions'),
       window.api.getStore('keywordRulesEnabled'),
-      window.api.getStore('keywordRules')
+      window.api.getStore('keywordRules'),
+      window.api.getStore('walkUnreadDms'),
+      window.api.getStore('checkNotifications'),
+      window.api.getStore('acceptFollowRequests'),
+      window.api.getStore('followBack')
     ])
     autoReplyController.setEnabled(Boolean(enabled))
     autoReplyController.setMemory(typeof memory === 'string' ? memory : '')
@@ -37,11 +53,13 @@ export default function InstagramPanel(): JSX.Element {
     autoReplyController.setFlags({
       replyOwnPostComments: own !== false,
       replyMentions: mentions !== false,
-      keywordRulesEnabled: kwOn !== false
+      keywordRulesEnabled: kwOn !== false,
+      walkUnreadDms: walk !== false,
+      checkNotifications: notif !== false,
+      acceptFollowRequests: Boolean(accept),
+      followBack: Boolean(fb)
     })
-    if (Array.isArray(kwRules)) {
-      autoReplyController.setKeywordRules(kwRules as KeywordRule[])
-    }
+    if (Array.isArray(kwRules)) autoReplyController.setKeywordRules(kwRules as KeywordRule[])
   }, [])
 
   useEffect(() => {
@@ -61,12 +79,10 @@ export default function InstagramPanel(): JSX.Element {
   useEffect(() => {
     const webview = webviewRef.current
     if (!webview) return
-
     const updateNav = () => {
       setCanGoBack(webview.canGoBack())
       setCanGoForward(webview.canGoForward())
     }
-
     const handleStart = () => setIsLoading(true)
     const handleStop = () => {
       setIsLoading(false)
@@ -77,14 +93,11 @@ export default function InstagramPanel(): JSX.Element {
       updateNav()
       setTimeout(() => void injectMonitor(), 1000)
     }
-
     webview.addEventListener('did-start-loading', handleStart)
     webview.addEventListener('did-stop-loading', handleStop)
     webview.addEventListener('did-navigate', handleNav)
     webview.addEventListener('did-navigate-in-page', handleNav)
-
     setTimeout(() => void injectMonitor(), 1200)
-
     return () => {
       webview.removeEventListener('did-start-loading', handleStart)
       webview.removeEventListener('did-stop-loading', handleStop)
@@ -94,16 +107,10 @@ export default function InstagramPanel(): JSX.Element {
   }, [injectMonitor])
 
   const levelColor = (level: ActivityItem['level']): string => {
-    switch (level) {
-      case 'success':
-        return 'text-emerald-400'
-      case 'warn':
-        return 'text-amber-400'
-      case 'error':
-        return 'text-red-400'
-      default:
-        return 'text-white/55'
-    }
+    if (level === 'success') return 'text-emerald-400'
+    if (level === 'warn') return 'text-amber-400'
+    if (level === 'error') return 'text-red-400'
+    return 'text-white/55'
   }
 
   return (
@@ -113,20 +120,14 @@ export default function InstagramPanel(): JSX.Element {
           <button
             onClick={() => webviewRef.current?.goBack()}
             disabled={!canGoBack}
-            className={cn(
-              'rounded-md p-1.5',
-              canGoBack ? 'text-white/60 hover:bg-white/10' : 'cursor-not-allowed text-white/20'
-            )}
+            className={cn('rounded-md p-1.5', canGoBack ? 'text-white/60 hover:bg-white/10' : 'text-white/20')}
           >
             <ArrowRight className="h-3.5 w-3.5" />
           </button>
           <button
             onClick={() => webviewRef.current?.goForward()}
             disabled={!canGoForward}
-            className={cn(
-              'rounded-md p-1.5',
-              canGoForward ? 'text-white/60 hover:bg-white/10' : 'cursor-not-allowed text-white/20'
-            )}
+            className={cn('rounded-md p-1.5', canGoForward ? 'text-white/60 hover:bg-white/10' : 'text-white/20')}
           >
             <ArrowLeft className="h-3.5 w-3.5" />
           </button>
@@ -141,17 +142,14 @@ export default function InstagramPanel(): JSX.Element {
             onClick={() => setLogOpen((v) => !v)}
             className={cn(
               'flex items-center gap-1 rounded-md px-2 py-1 text-[10px]',
-              logOpen ? 'bg-white/10 text-white' : 'text-white/50 hover:bg-white/10'
+              logOpen ? 'bg-white/10 text-white' : 'text-white/50'
             )}
           >
             <Activity className="h-3.5 w-3.5" />
             لاگ
             {logOpen ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
           </button>
-          <button
-            onClick={() => webviewRef.current?.reload()}
-            className="rounded-md p-1.5 text-white/50 hover:bg-white/10"
-          >
+          <button onClick={() => webviewRef.current?.reload()} className="rounded-md p-1.5 text-white/50">
             <RefreshCw className={cn('h-3.5 w-3.5', isLoading && 'animate-spin')} />
           </button>
         </div>
@@ -165,11 +163,11 @@ export default function InstagramPanel(): JSX.Element {
             exit={{ height: 0, opacity: 0 }}
             className="overflow-hidden border-b border-white/[0.06] bg-black/90"
           >
-            <div className="max-h-40 space-y-1 overflow-y-auto px-3 py-2">
+            <div className="max-h-44 space-y-1 overflow-y-auto px-3 py-2">
               {activities.length === 0 ? (
-                <p className="text-[11px] text-white/35">منتظر رویداد… دایرکت یا پست را باز کنید.</p>
+                <p className="text-[11px] text-white/35">منتظر رویداد…</p>
               ) : (
-                activities.slice(0, 18).map((a) => (
+                activities.slice(0, 20).map((a) => (
                   <div key={a.id} className="flex gap-2 text-[11px]">
                     <span className="shrink-0 tabular-nums text-white/30">
                       {new Date(a.at).toLocaleTimeString('fa-IR', {

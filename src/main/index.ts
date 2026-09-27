@@ -11,13 +11,11 @@ const store = new Store({
     replyOwnPostComments: true,
     replyMentions: true,
     keywordRulesEnabled: true,
-    keywordRules: [] as Array<{
-      id: string
-      keyword: string
-      commentReply: string
-      dmMessage: string
-      enabled: boolean
-    }>,
+    walkUnreadDms: true,
+    checkNotifications: true,
+    acceptFollowRequests: false,
+    followBack: false,
+    keywordRules: [],
     windowBounds: { width: 1400, height: 900 }
   }
 })
@@ -28,7 +26,6 @@ let tray: Tray | null = null
 function createTrayIcon(): Electron.NativeImage {
   const size = 32
   const buf = Buffer.alloc(size * size * 4)
-
   const setPixel = (x: number, y: number, r: number, g: number, b: number, a = 255) => {
     if (x < 0 || y < 0 || x >= size || y >= size) return
     const i = (y * size + x) * 4
@@ -37,7 +34,6 @@ function createTrayIcon(): Electron.NativeImage {
     buf[i + 2] = b
     buf[i + 3] = a
   }
-
   const radius = 7
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
@@ -45,53 +41,19 @@ function createTrayIcon(): Electron.NativeImage {
       const dy = Math.max(radius - y, 0, y - (size - 1 - radius))
       const dist = Math.sqrt(dx * dx + dy * dy)
       if (dist > radius + 0.5) continue
-
       const t = (x + y) / (size * 2)
       const r = Math.round(168 + (236 - 168) * t)
       const g = Math.round(85 + (72 - 85) * t)
       const b = Math.round(247 + (153 - 247) * t)
-      const alpha =
-        dist > radius - 0.8 ? Math.round(255 * (1 - (dist - (radius - 0.8)) / 1.3)) : 255
+      const alpha = dist > radius - 0.8 ? Math.round(255 * (1 - (dist - (radius - 0.8)) / 1.3)) : 255
       setPixel(x, y, r, g, b, Math.max(0, alpha))
     }
   }
-
-  const camPad = 8
-  const camW = size - camPad * 2
-  const camH = size - camPad * 2 - 2
-  const camR = 4
-
-  for (let y = camPad; y < camPad + camH; y++) {
-    for (let x = camPad; x < camPad + camW; x++) {
-      const dx = Math.max(camR - (x - camPad), 0, x - (camPad + camW - 1 - camR))
-      const dy = Math.max(camR - (y - camPad), 0, y - (camPad + camH - 1 - camR))
-      const dist = Math.sqrt(dx * dx + dy * dy)
-      if (dist <= camR + 0.3) {
-        if (!(dist < camR - 1.6)) setPixel(x, y, 255, 255, 255, 230)
-      }
-    }
-  }
-
-  const cx = size / 2
-  const cy = size / 2 + 0.5
-  const lensR = 4.2
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const d = Math.sqrt((x - cx) ** 2 + (y - cy) ** 2)
-      if (d <= lensR && d >= lensR - 1.5) setPixel(x, y, 255, 255, 255, 240)
-    }
-  }
-
-  setPixel(22, 10, 255, 255, 255, 220)
-  setPixel(23, 10, 255, 255, 255, 180)
-  setPixel(22, 11, 255, 255, 255, 180)
-
   return nativeImage.createFromBuffer(buf, { width: size, height: size })
 }
 
 function createWindow(): void {
   const bounds = store.get('windowBounds') as { width: number; height: number }
-
   mainWindow = new BrowserWindow({
     width: bounds.width,
     height: bounds.height,
@@ -111,34 +73,28 @@ function createWindow(): void {
       spellcheck: false
     }
   })
-
   mainWindow.on('ready-to-show', () => mainWindow?.show())
-
   mainWindow.on('resize', () => {
     if (mainWindow) {
       const [width, height] = mainWindow.getSize()
       store.set('windowBounds', { width, height })
     }
   })
-
   mainWindow.on('close', (event) => {
     if (!(app as any).isQuitting) {
       event.preventDefault()
       mainWindow?.hide()
     }
   })
-
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
     return { action: 'deny' }
   })
-
-  mainWindow.webContents.on('will-attach-webview', (_event, webPreferences) => {
+  mainWindow.webContents.on('will-attach-webview', (_e, webPreferences) => {
     webPreferences.nodeIntegration = false
     webPreferences.contextIsolation = true
     delete (webPreferences as any).preload
   })
-
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
@@ -148,17 +104,17 @@ function createWindow(): void {
 
 function createTray(): void {
   tray = new Tray(createTrayIcon())
-  tray.setToolTip('TE IG Assist — دستیار حرفه‌ای اینستاگرام')
+  tray.setToolTip('TE IG Assist')
   tray.setContextMenu(
     Menu.buildFromTemplate([
       {
-        label: 'نمایش اپلیکیشن',
+        label: 'نمایش',
         click: () => {
           mainWindow?.show()
           mainWindow?.focus()
         }
       },
-      { label: 'مخفی کردن', click: () => mainWindow?.hide() },
+      { label: 'مخفی', click: () => mainWindow?.hide() },
       { type: 'separator' },
       {
         label: 'خروج',
