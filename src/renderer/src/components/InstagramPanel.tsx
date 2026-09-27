@@ -14,7 +14,7 @@ import {
 import { cn } from '../lib/utils'
 import { INJECTOR_SOURCE } from '../lib/instagramInjector'
 import { autoReplyController, type ActivityItem } from '../lib/autoReplyController'
-import type { KeywordRule } from '../lib/types'
+import type { DmListMode, KeywordRule } from '../lib/types'
 
 export default function InstagramPanel(): JSX.Element {
   const webviewRef = useRef<Electron.WebviewTag | null>(null)
@@ -52,7 +52,9 @@ export default function InstagramPanel(): JSX.Element {
       window.api.getStore('acceptFollowRequests'),
       window.api.getStore('followBack'),
       window.api.getStore('autoCycle'),
-      window.api.getStore('cycleIntervalMs')
+      window.api.getStore('cycleIntervalMs'),
+      window.api.getStore('dmListMode'),
+      window.api.getStore('dmUserList')
     ])
     const [
       enabled,
@@ -72,7 +74,9 @@ export default function InstagramPanel(): JSX.Element {
       accept,
       fb,
       autoCycle,
-      cycleMs
+      cycleMs,
+      dmMode,
+      dmUsers
     ] = vals
 
     autoReplyController.setEnabled(Boolean(enabled))
@@ -95,6 +99,12 @@ export default function InstagramPanel(): JSX.Element {
       delayDmsMs: typeof dDms === 'number' ? dDms : 2500,
       delayCommentsMs: typeof dCmt === 'number' ? dCmt : 3000,
       delayNotificationsMs: typeof dNotif === 'number' ? dNotif : 3000
+    })
+    const mode: DmListMode =
+      dmMode === 'whitelist' || dmMode === 'blacklist' || dmMode === 'off' ? dmMode : 'off'
+    autoReplyController.setDmFilter({
+      mode,
+      users: Array.isArray(dmUsers) ? (dmUsers as string[]) : []
     })
     if (Array.isArray(kwRules)) autoReplyController.setKeywordRules(kwRules as KeywordRule[])
   }, [])
