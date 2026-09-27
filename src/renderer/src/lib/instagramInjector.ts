@@ -1,9 +1,13 @@
 /**
- * Instagram guest injector — resilient DM detection.
+ * Instagram injector — conversation list by row index (not only href).
  */
 
 export const INJECTOR_SOURCE = `
 (function () {
+  if (window.__TE_IG_ASSIST_INJECTED__ && window.__TE_IG_POLL__) {
+    // Already live — just refresh helpers if needed
+  }
+
   var SEEN = window.__TE_IG_SEEN__ || new Set();
   window.__TE_IG_SEEN__ = SEEN;
   var PENDING = window.__TE_IG_PENDING__ || [];
@@ -16,16 +20,20 @@ export const INJECTOR_SOURCE = `
   function path() { return location.pathname || ''; }
   function isDirectPage() { return /\\/direct\\//i.test(path()); }
   function isPostPage() { return /\\/(p|reel)\\//i.test(path()); }
-  function isInbox() { return /\\/direct\\/(inbox)?\\/?$/i.test(path()) || path() === '/direct'; }
+  function isInbox() {
+    var p = path();
+    return p === '/direct/inbox/' || p === '/direct/inbox' || p === '/direct/' || p === '/direct';
+  }
+  function hasCompose() {
+    return !!document.querySelector('div[role="textbox"][contenteditable="true"], [contenteditable="true"][role="textbox"], textarea');
+  }
   function isThread() {
-    return /\\/direct\\/t\\//i.test(path()) ||
-      !!document.querySelector('div[role="textbox"][contenteditable="true"]');
+    return /\\/direct\\/t\\//i.test(path()) || (isDirectPage() && hasCompose() && !isInbox());
   }
 
   function fingerprint(text, extra) {
     return (String(text).replace(/\\s+/g, ' ').trim().slice(0, 120) + '|' + String(extra || '')).slice(0, 160);
   }
-
   function markSeen(fp) {
     SEEN.add(fp);
     if (SEEN.size > 1200) SEEN.delete(SEEN.values().next().value);
@@ -39,121 +47,72 @@ export const INJECTOR_SOURCE = `
       if (mid > vw * 0.56) return true;
       if (mid < vw * 0.44) return false;
     } catch (e) {}
-
-    // Background bubble color (sent often has solid tint)
-    var node = el;
-    for (var i = 0; i < 6 && node; i++) {
-      try {
-        var bg = window.getComputedStyle(node).backgroundColor || '';
-        var m = bg.match(/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/);
-        if (m) {
-          var r = +m[1], g = +m[2], b = +m[3];
-          // skip pure white/black/transparent-ish
-          if (r + g + b > 30 && r + g + b < 720) {
-            // Instagram sent: often gray-blue / purple-ish on dark theme
-            if (Math.abs(r - g) < 40 && Math.abs(g - b) < 40 && r > 40) {
-              // neutral gray bubble — could be either; don't decide
-            } else if (b > r && b > 100) {
-              return true;
-            }
-          }
-        }
-      } catch (e2) {}
-      node = node.parentElement;
-    }
     return false;
   }
 
   function collectDmCandidates() {
     var out = [];
     var seenEl = new WeakSet();
-
     function add(el) {
       if (!el || seenEl.has(el)) return;
       seenEl.add(el);
       var text = (el.innerText || el.textContent || '').trim();
       if (!text || text.length < 1 || text.length > 2000) return;
-      if (/^(Send|ارسال|Like|Seen|Active|Message|Enter|Online|Offline)/i.test(text)) return;
-      if (/^[0-9]{1,2}:[0-9]{2}\\s*(AM|PM)?$/i.test(text)) return;
+      if (/^(Send|ارسال|Like|Seen|Active|Message|Enter|Online)/i.test(text)) return;
+      if (/^[0-9]{1,2}:[0-9]{2}/.test(text) && text.length < 14) return;
       if (lastSentText && text === lastSentText) return;
-      // skip very short single tokens that are just names? keep them for safety
       out.push({ el: el, text: text });
     }
-
     var selectors = [
       'div[role="main"] div[dir="auto"]',
       'div[role="list"] div[dir="auto"]',
       'div[role="row"] div[dir="auto"]',
-      'div[role="grid"] div[dir="auto"]',
       'main div[dir="auto"]',
-      // broader
       'div[role="main"] span[dir="auto"]',
       'div[role="row"] span[dir="auto"]'
     ];
-
     for (var s = 0; s < selectors.length; s++) {
       var list = document.querySelectorAll(selectors[s]);
       for (var i = 0; i < list.length; i++) add(list[i]);
     }
-
-    // Last resort: any dir=auto inside main that looks like a message bubble
     if (out.length < 2) {
       var all = document.querySelectorAll('[dir="auto"]');
       for (var j = 0; j < all.length; j++) {
-        var el = all[j];
         try {
-          var r = el.getBoundingClientRect();
-          if (r.width < 20 || r.height < 10) continue;
-          if (r.top < 80) continue; // header
-          add(el);
+          var r = all[j].getBoundingClientRect();
+          if (r.width < 20 || r.height < 10 || r.top < 80) continue;
+          add(all[j]);
         } catch (e) {}
       }
     }
-
     return out;
   }
 
   function scanDms() {
-    // Treat as thread if URL matches OR compose box is visible (open conversation)
-    var threadLike = isThread();
-    if (!isDirectPage() && !threadLike) {
+    if (!isDirectPage() && !hasCompose()) {
       lastScanInfo = { path: path(), dmNodes: 0, queued: 0, thread: false, method: 'skip' };
       return;
     }
-    if (isInbox() && !document.querySelector('div[role="textbox"][contenteditable="true"]')) {
+    if (isInbox() && !hasCompose()) {
       lastScanInfo = { path: path(), dmNodes: 0, queued: 0, thread: false, method: 'inbox_only' };
       return;
     }
 
     var nodes = collectDmCandidates();
     lastScanInfo = { path: path(), dmNodes: nodes.length, queued: 0, thread: true, method: 'tail' };
-
     if (!nodes.length) return;
 
-    var classified = [];
-    for (var i = 0; i < nodes.length; i++) {
-      classified.push({
-        text: nodes[i].text,
-        outgoing: isProbablyOutgoing(nodes[i].el),
-        el: nodes[i].el
-      });
-    }
+    var classified = nodes.map(function (n) {
+      return { text: n.text, outgoing: isProbablyOutgoing(n.el) };
+    });
 
     var lastOut = -1;
     for (var j = 0; j < classified.length; j++) {
       if (classified[j].outgoing) lastOut = j;
     }
+    var startIdx = lastOut >= 0 ? lastOut + 1 : Math.max(0, classified.length - 1);
+    if (lastOut < 0) lastScanInfo.method = 'last_only';
 
-    var startIdx;
-    if (lastOut >= 0) {
-      startIdx = lastOut + 1;
-    } else {
-      // no outgoing detected — only the last bubble if not our sent text
-      startIdx = Math.max(0, classified.length - 1);
-      lastScanInfo.method = 'last_only';
-    }
-
-    // If everything after lastOut is empty but we have nodes, force last incoming-looking
     var queuedAny = false;
     for (var k = startIdx; k < classified.length; k++) {
       var item = classified[k];
@@ -167,7 +126,6 @@ export const INJECTOR_SOURCE = `
       queuedAny = true;
     }
 
-    // Absolute fallback: last node not equal to lastSentText
     if (!queuedAny && classified.length) {
       var last = classified[classified.length - 1];
       var fp2 = fingerprint(last.text, 'dm');
@@ -181,16 +139,15 @@ export const INJECTOR_SOURCE = `
       }
     }
 
-    // Mark older as seen
     for (var m = 0; m < startIdx && m < classified.length; m++) {
       markSeen(fingerprint(classified[m].text, 'dm'));
     }
   }
 
-  function collectComments() {
-    var out = [];
+  function scanComments() {
+    if (!isPostPage()) return;
     var blocks = document.querySelectorAll('ul ul div, ul li div, section ul div');
-    for (var i = 0; i < blocks.length; i++) {
+    for (var i = 0; i < Math.min(blocks.length, 50); i++) {
       var root = blocks[i];
       var textEl = root.querySelector('span[dir="auto"]') || root.querySelector('div[dir="auto"]');
       if (!textEl) continue;
@@ -204,22 +161,12 @@ export const INJECTOR_SOURCE = `
         var m = href.match(/^\\/([A-Za-z0-9._]+)\\/?$/);
         if (m && !/^(p|reel|stories|direct|explore|accounts)$/i.test(m[1])) username = m[1];
       }
-      out.push({ root: root, text: text, username: username });
-    }
-    return out;
-  }
-
-  function scanComments() {
-    if (!isPostPage()) return;
-    var comments = collectComments().slice(-40);
-    for (var i = 0; i < comments.length; i++) {
-      var c = comments[i];
-      var fp = fingerprint((c.username || '') + ':' + c.text, 'cmt');
+      var fp = fingerprint((username || '') + ':' + text, 'cmt');
       if (SEEN.has(fp)) continue;
       markSeen(fp);
       PENDING.push({
-        id: fp, text: c.text, kind: 'comment', channel: 'comment',
-        username: c.username || '', isMention: /@/.test(c.text), path: path()
+        id: fp, text: text, kind: 'comment', channel: 'comment',
+        username: username, isMention: /@/.test(text), path: path()
       });
     }
   }
@@ -246,62 +193,143 @@ export const INJECTOR_SOURCE = `
       inbox: isInbox(),
       thread: isThread(),
       post: isPostPage(),
+      hasCompose: hasCompose(),
       lastScan: lastScanInfo,
-      hasCompose: !!document.querySelector('div[role="textbox"][contenteditable="true"], textarea')
+      convCount: (window.__TE_IG_LIST_CONVERSATIONS__ && window.__TE_IG_LIST_CONVERSATIONS__().length) || 0
     };
   };
 
-  window.__TE_IG_LIST_UNREAD__ = function () {
+  /**
+   * List conversation rows from inbox left panel.
+   * Returns { index, preview, href? } — open via __TE_IG_OPEN_CONV_INDEX__
+   */
+  window.__TE_IG_LIST_CONVERSATIONS__ = function () {
     var items = [];
-    var seenHref = {};
-    var anchors = document.querySelectorAll('a[href*="/direct/t/"]');
+    var seen = new Set();
 
+    function pushItem(indexKey, preview, href, el) {
+      var key = href || indexKey || preview.slice(0, 40);
+      if (seen.has(key)) return;
+      seen.add(key);
+      items.push({
+        index: items.length,
+        preview: (preview || '').replace(/\\s+/g, ' ').trim().slice(0, 100),
+        href: href || '',
+        // store nothing DOM-related in JSON; open by re-query index
+      });
+    }
+
+    // 1) Classic anchors
+    var anchors = document.querySelectorAll('a[href*="/direct/t/"]');
     for (var i = 0; i < anchors.length; i++) {
       var a = anchors[i];
       var href = a.getAttribute('href') || '';
-      if (!href || seenHref[href]) continue;
-      seenHref[href] = true;
-      var text = (a.innerText || '').replace(/\\s+/g, ' ').trim();
-      items.push({ href: href, preview: text.slice(0, 90), index: items.length, reason: 'link' });
-      if (items.length >= 10) break;
+      var prev = (a.innerText || '').trim();
+      // climb for richer preview
+      var row = a.closest('[role="button"]') || a.parentElement;
+      if (row && row.innerText) prev = row.innerText.trim();
+      pushItem('a-' + i, prev, href, a);
+      if (items.length >= 12) break;
     }
 
-    // Also collect role=button rows that contain thread links
+    // 2) listbox / list rows
     if (items.length === 0) {
-      var rows = document.querySelectorAll('div[role="button"]');
-      for (var r = 0; r < rows.length && items.length < 10; r++) {
-        var link = rows[r].querySelector('a[href*="/direct/t/"]');
-        if (!link) continue;
-        var h = link.getAttribute('href') || '';
-        if (!h || seenHref[h]) continue;
-        seenHref[h] = true;
-        items.push({
-          href: h,
-          preview: (rows[r].innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 90),
-          index: items.length,
-          reason: 'row'
-        });
+      var rows = document.querySelectorAll(
+        '[role="listbox"] [role="button"], [role="list"] [role="button"], div[role="button"]'
+      );
+      for (var r = 0; r < rows.length && items.length < 12; r++) {
+        var el = rows[r];
+        var t = (el.innerText || '').replace(/\\s+/g, ' ').trim();
+        if (!t || t.length < 2) continue;
+        // skip pure UI chrome
+        if (/^(Messages|Requests|Primary|General|Search|پیام|درخواست)/i.test(t) && t.length < 20) continue;
+        // must look like a conversation: has some text and reasonable height
+        try {
+          var rect = el.getBoundingClientRect();
+          if (rect.height < 40 || rect.height > 120) continue;
+          if (rect.width < 120) continue;
+          // left half of screen = inbox list
+          if (rect.left > (window.innerWidth || 800) * 0.55) continue;
+        } catch (e) { continue; }
+        var link = el.querySelector('a[href*="/direct/t/"]');
+        pushItem('row-' + r, t, link ? (link.getAttribute('href') || '') : '', el);
+      }
+    }
+
+    // 3) Any element with href-like direct/t in outerHTML near left
+    if (items.length === 0) {
+      var allBtns = document.querySelectorAll('div[role="button"]');
+      for (var b = 0; b < allBtns.length && items.length < 12; b++) {
+        var bt = allBtns[b];
+        var html = '';
+        try { html = bt.innerHTML || ''; } catch (e) {}
+        if (html.indexOf('/direct/t/') === -1 && html.indexOf('direct') === -1) {
+          // still allow tall left rows
+          try {
+            var rc = bt.getBoundingClientRect();
+            if (rc.left > 400 || rc.height < 48 || rc.height > 100) continue;
+          } catch (e2) { continue; }
+        }
+        var tx = (bt.innerText || '').replace(/\\s+/g, ' ').trim();
+        if (tx.length < 3) continue;
+        pushItem('b-' + b, tx, '', bt);
       }
     }
 
     return items;
   };
 
-  /** Prefer click to keep SPA / session; fallback href */
-  window.__TE_IG_OPEN_THREAD__ = function (href) {
-    if (!href) return { ok: false };
+  // Back-compat alias
+  window.__TE_IG_LIST_UNREAD__ = window.__TE_IG_LIST_CONVERSATIONS__;
+
+  window.__TE_IG_OPEN_CONV_INDEX__ = function (index) {
+    var items = window.__TE_IG_LIST_CONVERSATIONS__();
+    if (!items || !items[index]) return { ok: false, reason: 'bad_index' };
+
+    // Re-find and click
     var anchors = document.querySelectorAll('a[href*="/direct/t/"]');
-    for (var i = 0; i < anchors.length; i++) {
-      var a = anchors[i];
-      var h = a.getAttribute('href') || '';
-      if (h === href || h.indexOf(href) !== -1 || href.indexOf(h) !== -1) {
-        a.click();
-        return { ok: true, via: 'click' };
+    if (items[index].href) {
+      for (var i = 0; i < anchors.length; i++) {
+        var h = anchors[i].getAttribute('href') || '';
+        if (h === items[index].href || h.indexOf(items[index].href) !== -1) {
+          anchors[i].click();
+          return { ok: true, via: 'href_click' };
+        }
       }
     }
-    if (href.indexOf('http') === 0) location.href = href;
-    else location.href = 'https://www.instagram.com' + (href.charAt(0) === '/' ? href : '/' + href);
-    return { ok: true, via: 'href' };
+
+    // Click Nth left-panel conversation button
+    var rows = [];
+    var candidates = document.querySelectorAll(
+      '[role="listbox"] [role="button"], [role="list"] [role="button"], div[role="button"]'
+    );
+    for (var r = 0; r < candidates.length; r++) {
+      var el = candidates[r];
+      try {
+        var rect = el.getBoundingClientRect();
+        if (rect.height < 40 || rect.height > 120) continue;
+        if (rect.left > (window.innerWidth || 800) * 0.55) continue;
+        var t = (el.innerText || '').trim();
+        if (!t || t.length < 2) continue;
+        rows.push(el);
+      } catch (e) {}
+    }
+    if (rows[index]) {
+      rows[index].click();
+      return { ok: true, via: 'index_click', count: rows.length };
+    }
+
+    if (items[index].href) {
+      var href = items[index].href;
+      location.href = href.indexOf('http') === 0 ? href : ('https://www.instagram.com' + href);
+      return { ok: true, via: 'location' };
+    }
+
+    return { ok: false, reason: 'not_found', rows: rows.length };
+  };
+
+  window.__TE_IG_OPEN_THREAD__ = function (href) {
+    return window.__TE_IG_OPEN_CONV_INDEX__(0);
   };
 
   window.__TE_IG_OPEN_HREF__ = function (href) {
@@ -363,17 +391,14 @@ export const INJECTOR_SOURCE = `
     var now = Date.now();
     if (lastSentText === text && now - lastSendAt < 15000) return { ok: true, reason: 'already_sent' };
     if (now - lastSendAt < MIN_SEND_GAP_MS) return { ok: true, reason: 'cooldown_ok' };
-
     var box =
       document.querySelector('div[role="textbox"][contenteditable="true"]') ||
       document.querySelector('[contenteditable="true"][role="textbox"]') ||
       document.querySelector('div[contenteditable="true"]') ||
       document.querySelector('textarea');
     if (!box) return { ok: false, reason: 'no_compose' };
-
     fillAndSend(box, text);
     await new Promise(function (r) { setTimeout(r, 350); });
-
     var sendBtn =
       document.querySelector('[aria-label="Send"]') ||
       document.querySelector('[aria-label="ارسال"]');
@@ -451,14 +476,6 @@ export const INJECTOR_SOURCE = `
   window.__TE_IG_OPEN_ACTIVITY_UI__ = function () {
     var links = document.querySelectorAll('a[href="/accounts/activity/"], a[href*="activity"], a[href="/notifications/"]');
     if (links.length) { links[0].click(); return true; }
-    var nav = document.querySelectorAll('a[role="link"], div[role="link"]');
-    for (var i = 0; i < nav.length; i++) {
-      var al = (nav[i].getAttribute('aria-label') || '') + ' ' + (nav[i].innerText || '');
-      if (/notification|activity|فعالیت|اعلان/i.test(al)) {
-        nav[i].click();
-        return true;
-      }
-    }
     location.href = 'https://www.instagram.com/accounts/activity/';
     return true;
   };

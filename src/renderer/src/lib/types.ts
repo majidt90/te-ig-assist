@@ -7,11 +7,8 @@ export interface KeywordRule {
 }
 
 export interface FeatureFlags {
-  /** Master: reply to Instagram DMs */
   autoReplyDms: boolean
-  /** Master: reply to post comments */
   autoReplyComments: boolean
-  /** Master: walk notifications / activity */
   autoReplyNotifications: boolean
   replyOwnPostComments: boolean
   replyMentions: boolean
@@ -19,6 +16,12 @@ export interface FeatureFlags {
   walkUnreadDms: boolean
   acceptFollowRequests: boolean
   followBack: boolean
+}
+
+export interface FeatureDelays {
+  delayDmsMs: number
+  delayCommentsMs: number
+  delayNotificationsMs: number
 }
 
 export const DEFAULT_FLAGS: FeatureFlags = {
@@ -31,4 +34,10 @@ export const DEFAULT_FLAGS: FeatureFlags = {
   walkUnreadDms: true,
   acceptFollowRequests: false,
   followBack: false
+}
+
+export const DEFAULT_DELAYS: FeatureDelays = {
+  delayDmsMs: 2500,
+  delayCommentsMs: 3000,
+  delayNotificationsMs: 3000
 }
