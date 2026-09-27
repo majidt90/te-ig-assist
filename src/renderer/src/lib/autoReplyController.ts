@@ -164,6 +164,11 @@ export class AutoReplyController {
     this.cycleBusy = false
     this.processing = false
     this.pushActivity('info', '▶ اجرای فورس شروع شد')
+    if (!this.webview) {
+      this.pushActivity('error', 'وب‌ویو متصل نیست — صفحه اینستاگرام را رفرش کنید')
+    } else {
+      this.pushActivity('info', `وب‌ویو OK · صف فعلی: ${this.tasks.length}`)
+    }
     this.lastCycleAt = 0
     this.phase = 'idle'
     this.tasks = []
@@ -316,7 +321,24 @@ export class AutoReplyController {
     this.webview = webview
     this.injectorSource = injectorSource
     if (this.pollTimer) clearInterval(this.pollTimer)
-    this.pollTimer = setInterval(() => void this.tick(), 1500)
+    this.pollTimer = setInterval(() => void this.tick(), 1200)
+  }
+
+  /** Called by InstagramPanel after load — must exist or bind never runs */
+  async ensureInjected(webview: WebviewLike, injectorSource: string): Promise<void> {
+    this.webview = webview
+    this.injectorSource = injectorSource
+    try {
+      const has = await this.execWithTimeout<boolean>(
+        '!!(window.__TE_IG_POLL__ && window.__TE_IG_LIST_CONVERSATIONS__)',
+        2500
+      )
+      if (!has && injectorSource) {
+        await this.execWithTimeout(injectorSource, 4000)
+      }
+    } catch {
+      /* ignore */
+    }
   }
 
   unbindWebview(): void {
@@ -325,22 +347,35 @@ export class AutoReplyController {
     this.webview = null
   }
 
-  private async exec<T>(code: string): Promise<T | null> {
+  private async execWithTimeout<T>(code: string, ms = 4000): Promise<T | null> {
     const wv = this.webview
     if (!wv) return null
     try {
-      return (await wv.executeJavaScript(code)) as T
+      const result = await Promise.race([
+        wv.executeJavaScript(code) as Promise<T>,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), ms))
+      ])
+      return result as T | null
     } catch {
       return null
     }
+  }
+
+  private async exec<T>(code: string): Promise<T | null> {
+    return this.execWithTimeout<T>(code, 4000)
   }
 
   private async tick(): Promise<void> {
     const wv = this.webview
     if (!wv) return
     try {
-      const has = await this.exec<boolean>('!!(window.__TE_IG_POLL__ && window.__TE_IG_SEND_REPLY__)')
-      if (!has && this.injectorSource) await wv.executeJavaScript(this.injectorSource)
+      const has = await this.execWithTimeout<boolean>(
+        '!!(window.__TE_IG_POLL__ && window.__TE_IG_SEND_REPLY__)',
+        2000
+      )
+      if (!has && this.injectorSource) {
+        await this.execWithTimeout(this.injectorSource, 3500)
+      }
 
       const status = await this.exec<{ path?: string; ready?: boolean; peer?: string }>(
         'window.__TE_IG_STATUS__ ? window.__TE_IG_STATUS__() : null'
@@ -492,8 +527,12 @@ export class AutoReplyController {
       due.sort((a, b) => a.executeAt - b.executeAt)
       for (const task of due) {
         this.tasks = this.tasks.filter((t) => t.id !== task.id)
-        await this.executeTask(task)
-        await sleep(350)
+        try {
+          await this.executeTask(task)
+        } catch {
+          this.pushActivity('warn', `خطا در تسک ${task.kind}`)
+        }
+        await sleep(250)
       }
     } finally {
       this.processing = false
@@ -503,11 +542,19 @@ export class AutoReplyController {
   private async executeTask(task: Task): Promise<void> {
     switch (task.kind) {
       case 'open_first_unread': {
-        if (this.injectorSource) {
-          const alive = await this.exec<boolean>('!!window.__TE_IG_LIST_CONVERSATIONS__')
-          if (!alive) await this.exec(this.injectorSource)
-        }
         const attempt = Number(task.payload['attempt'] || 1)
+        this.pushActivity('info', `شروع اسکن unread (تلاش ${attempt})`)
+        if (!this.webview) {
+          this.pushActivity('error', 'وب‌ویو نیست — اسکن لغو')
+          break
+        }
+        if (this.injectorSource) {
+          const alive = await this.execWithTimeout<boolean>(
+            '!!window.__TE_IG_LIST_CONVERSATIONS__',
+            2000
+          )
+          if (!alive) await this.execWithTimeout(this.injectorSource, 3500)
+        }
         const list =
           (await this.exec<
             Array<{ index: number; preview: string; href?: string; username?: string }>
@@ -616,7 +663,6 @@ export class AutoReplyController {
             this.markThreadHandled(threadKey, preview, true)
             this.pushActivity('info', `رد شد (فیلتر لیست): @${info.peer}`)
             this.enqueueTask('back_inbox', { threadKey, preview, finalize: true }, 400)
-            break
           }
         }
         break
@@ -705,7 +751,7 @@ export class AutoReplyController {
           this.markThreadHandled(threadKey, preview, true)
         }
         void this.exec(
-          'window.__TE_IG_GOTO_INBOX__ ? window.__TE_IG_GOTO_INBOX__() : window.__TE_IG_GOTO__("/direct/inbox/")'
+          'window.__TE_IG_GOTO_INBOX__ ? window.__TE_IG_GOTO_INBOX__() : (location.href="https://www.instagram.com/direct/inbox/")'
         )
         if (this.flags.walkUnreadDms && this.unreadPass < 8) {
           this.unreadPass += 1
@@ -733,19 +779,19 @@ export class AutoReplyController {
       if (this.flags.autoReplyDms && this.flags.walkUnreadDms) {
         this.phase = 'dms'
         this.pushActivity('info', force ? 'فورس: بررسی unread…' : 'بررسی دایرکت‌های unread…')
-        // Enqueue BEFORE navigation — location change can kill JS context
-        this.enqueueTask('open_first_unread', { attempt: 1 }, 2500)
-        this.enqueueTask('open_first_unread', { attempt: 2 }, 5500)
-        this.enqueueTask('open_first_unread', { attempt: 3 }, 9000)
+        this.enqueueTask('open_first_unread', { attempt: 1 }, 2000)
+        this.enqueueTask('open_first_unread', { attempt: 2 }, 5000)
+        this.enqueueTask('open_first_unread', { attempt: 3 }, 8500)
+        this.pushActivity('info', `تسک unread در صف: ${this.tasks.length}`)
         void this.exec(
-          'window.__TE_IG_GOTO_INBOX__ ? window.__TE_IG_GOTO_INBOX__() : window.__TE_IG_GOTO__("/direct/inbox/")'
+          'window.__TE_IG_GOTO_INBOX__ ? window.__TE_IG_GOTO_INBOX__() : (location.href="https://www.instagram.com/direct/inbox/")'
         )
       } else if (this.flags.autoReplyNotifications) {
         this.phase = 'notifs'
         this.pushActivity('info', 'بررسی نوتیفیکیشن…')
         this.enqueueTask('open_activity_item', {}, 2500)
         void this.exec(
-          'window.__TE_IG_OPEN_ACTIVITY_UI__ ? window.__TE_IG_OPEN_ACTIVITY_UI__() : window.__TE_IG_GOTO__("/accounts/activity/")'
+          'window.__TE_IG_OPEN_ACTIVITY_UI__ ? window.__TE_IG_OPEN_ACTIVITY_UI__() : (location.href="https://www.instagram.com/accounts/activity/")'
         )
       } else {
         this.phase = 'listening'
