@@ -1,6 +1,6 @@
 import { generateSmartReply, generateCommentReply, type IncomingMessage } from './replyEngine'
-import type { FeatureDelays, FeatureFlags, KeywordRule } from './types'
-import { DEFAULT_DELAYS, DEFAULT_FLAGS } from './types'
+import type { DmFilter, FeatureDelays, FeatureFlags, KeywordRule } from './types'
+import { DEFAULT_DELAYS, DEFAULT_DM_FILTER, DEFAULT_FLAGS, isDmUserAllowed } from './types'
 
 export type ActivityLevel = 'info' | 'success' | 'warn' | 'error'
 
@@ -54,6 +54,7 @@ export class AutoReplyController {
   private lastReadyPath = ''
   private flags: FeatureFlags = { ...DEFAULT_FLAGS }
   private delays: FeatureDelays = { ...DEFAULT_DELAYS }
+  private dmFilter: DmFilter = { ...DEFAULT_DM_FILTER, users: [] }
   private keywordRules: KeywordRule[] = []
   private pendingDmAfterNav: { username: string; text: string } | null = null
 
@@ -98,6 +99,13 @@ export class AutoReplyController {
 
   setDelays(d: Partial<FeatureDelays>): void {
     this.delays = { ...this.delays, ...d }
+  }
+
+  setDmFilter(filter: Partial<DmFilter>): void {
+    this.dmFilter = {
+      mode: filter.mode ?? this.dmFilter.mode,
+      users: Array.isArray(filter.users) ? filter.users : this.dmFilter.users
+    }
   }
 
   setKeywordRules(rules: KeywordRule[]): void {
@@ -217,7 +225,8 @@ export class AutoReplyController {
             id: item.id,
             text: item.text,
             timestamp: Date.now(),
-            channel: 'dm'
+            channel: 'dm',
+            username: item.username
           })
         } else if (item.kind === 'comment' && this.flags.autoReplyComments) {
           this.scheduleReply({
@@ -252,11 +261,24 @@ export class AutoReplyController {
     if (this.repliedIds.has(item.id) || this.inFlightIds.has(item.id)) return
     if (this.tasks.some((t) => t.payload['msgId'] === item.id)) return
 
+    if (item.channel === 'dm' && !isDmUserAllowed(item.username, this.dmFilter)) {
+      this.repliedIds.add(item.id)
+      const u = item.username || '؟'
+      const mode = this.dmFilter.mode
+      this.pushActivity(
+        'info',
+        mode === 'whitelist'
+          ? `رد شد (وایت‌لیست): @${u}`
+          : `رد شد (بلک‌لیست): @${u}`
+      )
+      return
+    }
+
     const delay = item.channel === 'dm' ? this.delays.delayDmsMs : this.delays.delayCommentsMs
     this.pushActivity(
       'info',
       item.channel === 'dm'
-        ? `پیام در صف: ${item.text.slice(0, 42)}…`
+        ? `پیام در صف${item.username ? ' @' + item.username : ''}: ${item.text.slice(0, 36)}…`
         : `کامنت در صف: ${item.text.slice(0, 42)}…`
     )
     this.enqueueTask(
@@ -294,11 +316,21 @@ export class AutoReplyController {
           reason?: string
           total?: number
           preview?: string
+          username?: string
         }>('window.__TE_IG_OPEN_FIRST_UNREAD__ ? window.__TE_IG_OPEN_FIRST_UNREAD__() : ({ok:false})')
         if (!res?.ok) {
           this.pushActivity('info', `unread باقی نماند (${res?.reason || 'ok'})`)
           this.unreadPass = 99
         } else {
+          // Pre-filter by list using preview username when available
+          if (res.username && !isDmUserAllowed(res.username, this.dmFilter)) {
+            this.pushActivity(
+              'info',
+              `رد گفتگو (فیلتر لیست): @${res.username}`
+            )
+            this.enqueueTask('back_inbox', {}, 1200)
+            break
+          }
           this.pushActivity(
             'info',
             `باز شد: ${(res.preview || '').slice(0, 48)} (مانده≈${(res.total || 1) - 1})`
@@ -310,24 +342,25 @@ export class AutoReplyController {
         break
       }
       case 'force_scan': {
-        const info = await this.exec<{ dmNodes?: number; queued?: number; method?: string }>(
+        const info = await this.exec<{ dmNodes?: number; queued?: number; method?: string; peer?: string }>(
           'window.__TE_IG_FORCE_SCAN_THREAD__ ? window.__TE_IG_FORCE_SCAN_THREAD__() : null'
         )
         this.pushActivity(
           'info',
-          `اسکن اجباری: ${info?.dmNodes ?? 0} حباب / ${info?.queued ?? 0} صف (${info?.method || '?'})`
+          `اسکن اجباری: ${info?.dmNodes ?? 0} حباب / ${info?.queued ?? 0} صف${info?.peer ? ' @' + info.peer : ''}`
         )
         const batch =
-          (await this.exec<Array<{ id: string; text: string; kind: string }>>(
-            'window.__TE_IG_POLL__ ? window.__TE_IG_POLL__() : []'
-          )) || []
+          (await this.exec<
+            Array<{ id: string; text: string; kind: string; username?: string }>
+          >('window.__TE_IG_POLL__ ? window.__TE_IG_POLL__() : []')) || []
         for (const item of batch) {
           if (item.kind === 'dm_incoming' && this.flags.autoReplyDms) {
             this.scheduleReply({
               id: item.id,
               text: item.text,
               timestamp: Date.now(),
-              channel: 'dm'
+              channel: 'dm',
+              username: item.username || info?.peer
             })
           }
         }
