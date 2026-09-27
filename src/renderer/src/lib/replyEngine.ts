@@ -1,6 +1,5 @@
 /**
  * Coordinated Logic + Memory reply engine.
- * Logic rules define WHEN / HOW to react; Memory supplies facts.
  */
 
 export interface IncomingMessage {
@@ -11,7 +10,7 @@ export interface IncomingMessage {
 
 export interface ReplyResult {
   text: string
-  actions: Array<'like_shared' | 'none'>
+  actions: Array<'like_shared' | 'react_heart' | 'none'>
   matchedLogic?: string
 }
 
@@ -29,12 +28,26 @@ const HOW_ARE_YOU = [
   "what's up"
 ]
 const PRICE_KEYS = ['قیمت', 'چنده', 'چند', 'price', 'هزینه', 'چقدر']
+const POST_KEYS = [
+  'پست',
+  'ریلز',
+  'reel',
+  'photo',
+  'عکس',
+  'ویدیو',
+  'media',
+  'attachment',
+  'فرستاد',
+  'shared_post',
+  'sticker',
+  'استیکر'
+]
 
 function normalize(s: string): string {
   return s
     .trim()
     .toLowerCase()
-    .replace(/[؟?!.،,]/g, ' ')
+    .replace(/[؟?!.،,\[\]]/g, ' ')
     .replace(/\s+/g, ' ')
 }
 
@@ -55,13 +68,6 @@ export interface LogicRule {
   action: string
 }
 
-/**
- * Accepts:
- * - اگر حال پرسید آنگاه تشکر کن و احوال بپرس
- * - اگر پست فرستاد → لایک کن
- * - if price then use memory
- * - حال پرسید => تشکر کن
- */
 export function parseLogicRules(logic: string): LogicRule[] {
   const rules: LogicRule[] = []
   for (const line of linesOf(logic)) {
@@ -72,31 +78,24 @@ export function parseLogicRules(logic: string): LogicRule[] {
       line.match(/^if\s+(.+?)\s+then\s+(.+)$/i) ||
       line.match(/^(.+?)\s*(?:=>|→|->)\s*(.+)$/)
 
-    // «اگر X ی Y» / «اگر X ، Y»
-    if (!m) {
-      m = line.match(/^اگر\s+(.+?)\s+[،,]\s*(.+)$/i)
-    }
-    // «اگر X ی/و Y» loosely: اگر + first phrase + action verbs
-    if (!m) {
-      m = line.match(/^اگر\s+(.+?)\s+(تشکر|ممنون|لایک|بپرس|بگو|جواب|سلام|استفاده).+$/i)
-      if (m) {
-        const rest = line.replace(/^اگر\s+/i, '')
-        const cond = m[1].trim()
-        const action = rest.slice(cond.length).trim()
-        if (cond && action) {
-          rules.push({ raw: line, condition: cond, action })
-          continue
-        }
-      }
-    }
+    if (!m) m = line.match(/^اگر\s+(.+?)\s+[،,]\s*(.+)$/i)
 
     if (m) {
       rules.push({ raw: line, condition: m[1].trim(), action: m[2].trim() })
       continue
     }
 
-    // Free-form: treat as soft condition only if short; action = use memory + line hint
-    if (line.length <= 80) {
+    // lines that mention react / heart without formal syntax
+    if (/react|ری.?اکت|قلب|heart|لایک/i.test(line) && /پست|attachment|فرستاد|media/i.test(line)) {
+      rules.push({
+        raw: line,
+        condition: 'پست فرستاد attachment',
+        action: line
+      })
+      continue
+    }
+
+    if (line.length <= 80 && !/خودمونی|دوستانه|گرم برخورد/i.test(line)) {
       rules.push({ raw: line, condition: line, action: 'از حافظه جواب بده' })
     }
   }
@@ -110,10 +109,7 @@ function conditionMatches(condition: string, incoming: string): boolean {
 
   const checks: Array<{ keys: string[]; aliases: string[] }> = [
     { keys: ['حال', 'احوال', 'خوبی', 'چطوری'], aliases: HOW_ARE_YOU },
-    {
-      keys: ['پست', 'ریلز', 'reel', 'photo', 'عکس', 'ویدیو', 'media', 'فرستاد'],
-      aliases: ['sent an attachment', 'photo', 'video', 'reel', 'post', 'attachment']
-    },
+    { keys: POST_KEYS, aliases: POST_KEYS },
     { keys: ['قیمت', 'چنده', 'هزینه'], aliases: PRICE_KEYS },
     { keys: ['سلام', 'احوالپرسی'], aliases: GREETINGS },
     { keys: ['اسم', 'کی هستی'], aliases: NAME_KEYS },
@@ -121,25 +117,45 @@ function conditionMatches(condition: string, incoming: string): boolean {
   ]
 
   for (const bag of checks) {
-    if (bag.keys.some((k) => c.includes(k))) {
+    if (bag.keys.some((k) => c.includes(normalize(k)))) {
       if (
         bag.aliases.some((a) => q.includes(normalize(a))) ||
-        bag.keys.some((k) => q.includes(k))
+        bag.keys.some((k) => q.includes(normalize(k)))
       ) {
         return true
       }
     }
   }
 
-  // significant word overlap (ignore filler)
-  const stop = new Set(['اگر', 'آنگاه', 'آن', 'گاه', 'پس', 'را', 'رو', 'به', 'از', 'با', 'که', 'و', 'یا', 'the', 'a', 'and', 'then', 'if'])
+  const stop = new Set([
+    'اگر',
+    'آنگاه',
+    'آن',
+    'گاه',
+    'پس',
+    'را',
+    'رو',
+    'به',
+    'از',
+    'با',
+    'که',
+    'و',
+    'یا',
+    'the',
+    'a',
+    'and',
+    'then',
+    'if',
+    'form',
+    'sender',
+    'with'
+  ])
   const words = c.split(' ').filter((w) => w.length > 2 && !stop.has(w))
   if (!words.length) return false
   let hits = 0
   for (const w of words) {
     if (q.includes(w)) hits++
   }
-  // need at least 1 hit for short conditions, 2 for long
   return words.length <= 3 ? hits >= 1 : hits >= 2
 }
 
@@ -173,6 +189,15 @@ function relevantMemory(memory: string, incoming: string): string[] {
     .map((x) => x.line)
 }
 
+function isPostLikeIncoming(incoming: string): boolean {
+  const q = normalize(incoming)
+  return (
+    q.includes('shared_post') ||
+    q.includes('attachment') ||
+    POST_KEYS.some((k) => q.includes(normalize(k)))
+  )
+}
+
 function applyActionTemplate(
   action: string,
   memory: string,
@@ -182,8 +207,13 @@ function applyActionTemplate(
   const mem = linesOf(memory)
   const actions: ReplyResult['actions'] = []
 
-  if (/لایک|like/.test(a)) {
-    actions.push('like_shared')
+  // React / heart / like on post
+  if (/react|ری.?اکت|قلب|heart|استیکر|sticker|لایک|like/i.test(action)) {
+    if (/heart|قلب|❤️|❤|استیکر|sticker|react/i.test(action)) {
+      actions.push('react_heart')
+    } else {
+      actions.push('like_shared')
+    }
   }
 
   if (/تشکر|ممنون|احوال|بپرس|حال/.test(a) || HOW_ARE_YOU.some((k) => normalize(incoming).includes(k))) {
@@ -204,14 +234,26 @@ function applyActionTemplate(
     }
   }
 
+  // Pure react action on post — short warm text optional
+  if (actions.includes('react_heart') || actions.includes('like_shared')) {
+    const warm = pick(['عالی بود 🔥', 'دمت گرم ✨', '👏 عالیه', 'خیلی قشنگ بود ❤️'])
+    return { text: warm, actions }
+  }
+
   if (/حافظه|memory|قیمت|بگو|جواب/.test(a)) {
     const rel = relevantMemory(memory, incoming)
     if (rel.length) return { text: rel.join('\n'), actions: actions.length ? actions : ['none'] }
     if (mem[0]) return { text: mem[0], actions: actions.length ? actions : ['none'] }
   }
 
-  // action is itself a reply template
   if (action.length > 6 && !/^اگر\s/.test(action) && !/^(از حافظه)/.test(action)) {
+    // skip pure English react instructions as reply text
+    if (/react to message|heart stiker|heart sticker/i.test(action)) {
+      return {
+        text: pick(['عالی بود 🔥', 'دمت گرم ✨', '❤️']),
+        actions: actions.length ? actions : ['react_heart']
+      }
+    }
     const rel = relevantMemory(memory, incoming)
     if (rel.length) return { text: `${action}\n${rel[0]}`, actions: actions.length ? actions : ['none'] }
     return { text: action, actions: actions.length ? actions : ['none'] }
@@ -235,7 +277,6 @@ export function generateSmartReply(
   const memLines = linesOf(memory)
   const rules = parseLogicRules(logic)
 
-  // 1) User logic rules (first match wins)
   for (const rule of rules) {
     if (conditionMatches(rule.condition, text)) {
       const applied = applyActionTemplate(rule.action, memory, text)
@@ -247,7 +288,15 @@ export function generateSmartReply(
     }
   }
 
-  // 2) Built-ins + memory
+  // Built-in: shared post without explicit rule still hearts if logic mentions react globally
+  if (isPostLikeIncoming(text)) {
+    const reactRule = rules.find((r) => /react|قلب|heart|لایک|like/i.test(r.action))
+    if (reactRule) {
+      const applied = applyActionTemplate(reactRule.action, memory, text)
+      return { ...applied, matchedLogic: reactRule.raw }
+    }
+  }
+
   if (GREETINGS.some((g) => q === g || q.startsWith(g + ' '))) {
     const name = findNameLine(memLines)
     return {
@@ -269,17 +318,6 @@ export function generateSmartReply(
     return {
       text: pick(['خواهش می‌کنم 🌟', 'قابلی نداشت 🌸', 'مرسی از لطف‌تون ✨']),
       actions: ['none']
-    }
-  }
-
-  if (/attachment|photo|video|reel|پست|عکس|ویدیو/i.test(text)) {
-    const likeRule = rules.find((r) => /لایک|like/i.test(r.action))
-    if (likeRule) {
-      return {
-        text: pick(['عالی بود 🔥', 'دمت گرم، دیدم ✨', '👏 عالیه']),
-        actions: ['like_shared'],
-        matchedLogic: likeRule.raw
-      }
     }
   }
 
