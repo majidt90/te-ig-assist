@@ -1,7 +1,17 @@
 import { motion } from 'framer-motion'
-import { Heart, Code2, Sparkles } from 'lucide-react'
+import {
+  Heart,
+  Code2,
+  Sparkles,
+  BookOpen,
+  MessageSquare,
+  Brain,
+  Shield,
+  Zap,
+  Settings,
+  Clock
+} from 'lucide-react'
 
-/** Planet-style mark matching product icon */
 function AppMark({ className }: { className?: string }): JSX.Element {
   return (
     <svg className={className} viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -34,6 +44,49 @@ function AppMark({ className }: { className?: string }): JSX.Element {
   )
 }
 
+const FEATURES: { icon: typeof MessageSquare; title: string; body: string }[] = [
+  {
+    icon: MessageSquare,
+    title: 'پاسخ دایرکت unread',
+    body: 'فقط گفتگوهای خوانده‌نشده را باز می‌کند، پیام‌ها را می‌خواند و پاسخ می‌دهد. با «پاسخ به همه پیام‌های ترد» همه پیام‌های بی‌پاسخ در صف قرار می‌گیرند.'
+  },
+  {
+    icon: Brain,
+    title: 'حافظه + منطق',
+    body: 'در تب حافظه واقعیت‌ها را بنویسید؛ در منطق قوانین «اگر … آنگاه …». مثال: اگر پست فرستاد آنگاه ری‌اکت قلب.'
+  },
+  {
+    icon: Zap,
+    title: 'اجرا فورس و چرخه',
+    body: 'هدر: روشن/خاموش، اجرا فورس، اتوماتیک/دستی، فاصله چرخه (دقیقه). فورس فوراً قابلیت‌های فعال را اجرا می‌کند.'
+  },
+  {
+    icon: Settings,
+    title: 'تأخیر و فیلتر دایرکت',
+    body: 'تأخیر جدا برای دایرکت/کامنت/نوتیف. وایت‌لیست یا بلک‌لیست یوزرنیم برای محدود کردن پاسخ.'
+  },
+  {
+    icon: Clock,
+    title: 'ساعات کاری و سقف روزانه',
+    body: 'در تنظیمات می‌توانید بازه ساعت پاسخ و حداکثر تعداد دایرکت/کامنت روزانه را فعال کنید.'
+  },
+  {
+    icon: Shield,
+    title: 'پیش‌نمایش قبل از ارسال',
+    body: 'اگر فعال باشد، پاسخ‌ها اول در پنل تأیید ظاهر می‌شوند؛ می‌توانید ارسال، رد یا ویرایش کنید.'
+  },
+  {
+    icon: Sparkles,
+    title: 'کامنت، منشن، کلیدواژه',
+    body: 'پاسخ کامنت پست و منشن؛ قوانین کلیدواژه: کلمه در کامنت → پاسخ + دایرکت اختیاری.'
+  },
+  {
+    icon: BookOpen,
+    title: 'لایسنس و Studio',
+    body: 'ورود با نام کاربری + ایمیل + لایسنس TEIG2. صدور لایسنس از پوشه license_generator با خروجی TXT/PDF.'
+  }
+]
+
 export default function AboutPanel(): JSX.Element {
   return (
     <motion.div
@@ -41,13 +94,11 @@ export default function AboutPanel(): JSX.Element {
       animate={{ opacity: 1, y: 0 }}
       className="flex h-full flex-col gap-4 overflow-y-auto p-4"
     >
-      <div className="flex flex-col items-center gap-3 pt-4 text-center">
-        <div className="relative">
-          <AppMark className="h-20 w-20 drop-shadow-[0_8px_24px_rgba(168,85,247,0.35)]" />
-        </div>
+      <div className="flex flex-col items-center gap-3 pt-2 text-center">
+        <AppMark className="h-20 w-20 drop-shadow-[0_8px_24px_rgba(168,85,247,0.35)]" />
         <div>
           <h2 className="text-base font-semibold tracking-tight">TE IG Assist</h2>
-          <p className="mt-1 text-[12px] text-[hsl(var(--muted-foreground))]">نسخه ۰.۱ · دسکتاپ</p>
+          <p className="mt-1 text-[12px] text-[hsl(var(--muted-foreground))]">نسخه ۰.۲ · دسکتاپ</p>
         </div>
       </div>
 
@@ -56,10 +107,6 @@ export default function AboutPanel(): JSX.Element {
           <Sparkles className="mt-0.5 h-3.5 w-3.5 shrink-0 text-fuchsia-400" />
           دستیار حرفه‌ای اینستاگرام برای پاسخ خودکار دایرکت، کامنت و نوتیفیکیشن با حافظه و منطق قابل
           تنظیم.
-        </p>
-        <p>
-          اپ روی Electron اجرا می‌شود، اینستاگرام وب را داخل خود دارد و با مانیتور DOM پیام‌های unread را
-          می‌خواند و طبق تنظیمات شما پاسخ می‌دهد.
         </p>
       </div>
 
@@ -76,7 +123,38 @@ export default function AboutPanel(): JSX.Element {
         </div>
       </div>
 
-      <p className="text-center text-[10px] text-[hsl(var(--muted-foreground))]">
+      <section className="space-y-2">
+        <h3 className="flex items-center gap-1.5 text-[12px] font-semibold">
+          <BookOpen className="h-3.5 w-3.5 text-sky-400" />
+          امکانات و نحوه استفاده
+        </h3>
+        <div className="space-y-2">
+          {FEATURES.map(({ icon: Icon, title, body }) => (
+            <div
+              key={title}
+              className="rounded-xl border border-[hsl(var(--border)/0.7)] bg-[hsl(var(--secondary)/0.35)] p-3"
+            >
+              <div className="mb-1 flex items-center gap-1.5 text-[12px] font-medium">
+                <Icon className="h-3.5 w-3.5 text-[hsl(var(--primary))]" />
+                {title}
+              </div>
+              <p className="text-[11px] leading-relaxed text-[hsl(var(--muted-foreground))]">{body}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/[0.06] p-3 text-[11px] leading-relaxed text-emerald-100/80">
+        <p className="font-medium text-emerald-300">شروع سریع</p>
+        <ol className="mt-1 list-inside list-decimal space-y-1 text-[hsl(var(--muted-foreground))]">
+          <li>وارد اینستاگرام شوید (پنل چپ)</li>
+          <li>حافظه و منطق را پر و ذخیره کنید</li>
+          <li>در تنظیمات قابلیت‌ها و ایمنی را تنظیم کنید</li>
+          <li>پاسخ‌گویی را روشن کنید و در صورت نیاز «اجرا فورس» بزنید</li>
+        </ol>
+      </div>
+
+      <p className="pb-2 text-center text-[10px] text-[hsl(var(--muted-foreground))]">
         © {new Date().getFullYear()} TERMIMAL · تمامی حقوق محفوظ است
       </p>
     </motion.div>
