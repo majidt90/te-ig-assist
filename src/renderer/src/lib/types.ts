@@ -18,6 +18,10 @@ export interface FeatureFlags {
   walkUnreadDms: boolean
   acceptFollowRequests: boolean
   followBack: boolean
+  /** Queue and reply every unanswered message in a thread, not only the last */
+  replyAllInThread: boolean
+  /** Require user approve before sending */
+  previewBeforeSend: boolean
 }
 
 export interface FeatureDelays {
@@ -31,6 +35,16 @@ export interface DmFilter {
   users: string[]
 }
 
+export interface SafetySettings {
+  workingHoursEnabled: boolean
+  /** Local hour 0-23 */
+  workStartHour: number
+  workEndHour: number
+  dailyLimitEnabled: boolean
+  dailyLimitDm: number
+  dailyLimitComment: number
+}
+
 export const DEFAULT_FLAGS: FeatureFlags = {
   autoReplyDms: true,
   autoReplyComments: true,
@@ -40,7 +54,9 @@ export const DEFAULT_FLAGS: FeatureFlags = {
   keywordRulesEnabled: true,
   walkUnreadDms: true,
   acceptFollowRequests: false,
-  followBack: false
+  followBack: false,
+  replyAllInThread: true,
+  previewBeforeSend: false
 }
 
 export const DEFAULT_DELAYS: FeatureDelays = {
@@ -54,15 +70,19 @@ export const DEFAULT_DM_FILTER: DmFilter = {
   users: []
 }
 
+export const DEFAULT_SAFETY: SafetySettings = {
+  workingHoursEnabled: false,
+  workStartHour: 9,
+  workEndHour: 22,
+  dailyLimitEnabled: false,
+  dailyLimitDm: 50,
+  dailyLimitComment: 30
+}
+
 export function normalizeUsername(u: string): string {
   return u.trim().replace(/^@/, '').toLowerCase()
 }
 
-/**
- * true = allowed to auto-reply
- * empty username: whitelist → not allowed (caller should not permanent-skip);
- * blacklist → allowed
- */
 export function isDmUserAllowed(username: string | undefined, filter: DmFilter): boolean {
   if (filter.mode === 'off') return true
   const list = filter.users.map(normalizeUsername).filter(Boolean)
@@ -73,16 +93,56 @@ export function isDmUserAllowed(username: string | undefined, filter: DmFilter):
   return filter.mode === 'whitelist' ? inList : !inList
 }
 
-/** Extract best-effort IG username token from inbox preview text */
+/** Extract best-effort IG username from inbox preview */
 export function extractUsernameFromPreview(preview: string): string {
   const t = (preview || '').replace(/\s+/g, ' ').trim()
-  // prefer token that looks like handle (letters, digits, . _ -)
+  if (!t) return ''
+
+  // 1) @handle
+  const at = t.match(/@([A-Za-z0-9._]{2,30})/)
+  if (at) return at[1]
+
+  // 2) first token that looks like a handle (not Persian-only display name)
   const tokens = t.split(' ')
-  for (const tok of tokens.slice(0, 4)) {
-    const x = tok.replace(/^@/, '')
-    if (/^[A-Za-z0-9._-]{2,30}$/.test(x) && !/^(unread|new|reacted|you|sent)$/i.test(x)) {
+  for (const tok of tokens.slice(0, 5)) {
+    const x = tok.replace(/^@/, '').replace(/[^؀-ۿa-zA-Z0-9._-]/g, '')
+    if (
+      /^[A-Za-z0-9._]{2,30}$/.test(x) &&
+      !/^(unread|new|reacted|you|sent|messages?|active|online|attachment)$/i.test(x)
+    ) {
       return x
     }
   }
+
+  // 3) collapsed display name → slug (Bizhannouri, m-a-r-y-a-m)
+  const namePart = t.split(/·|•|sent|Reacted|Unread|new message/i)[0]?.trim() || ''
+  const slug = namePart
+    .replace(/[^؀-ۿa-zA-Z0-9._\s-]/g, '')
+    .trim()
+    .split(/\s+/)
+    .join('')
+  if (/^[A-Za-z0-9._-]{2,30}$/.test(slug)) return slug
+
   return ''
+}
+
+/** Within working hours? supports overnight ranges (e.g. 22→8) */
+export function isWithinWorkingHours(
+  enabled: boolean,
+  startHour: number,
+  endHour: number,
+  now = new Date()
+): boolean {
+  if (!enabled) return true
+  const h = now.getHours()
+  const s = Math.max(0, Math.min(23, startHour))
+  const e = Math.max(0, Math.min(23, endHour))
+  if (s === e) return true
+  if (s < e) return h >= s && h < e
+  // overnight: e.g. 22 → 8
+  return h >= s || h < e
+}
+
+export function todayKey(d = new Date()): string {
+  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
 }
