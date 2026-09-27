@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { motion } from 'framer-motion'
 import { KeyRound, ShieldCheck } from 'lucide-react'
-import { validateLicenseWithLock } from '../lib/license'
+import { validateLicense } from '../lib/license'
 import { AppMark } from './AboutPanel'
 import { cn } from '../lib/utils'
 
@@ -12,9 +12,7 @@ interface Props {
 export default function LicenseGate({ onActivated }: Props): JSX.Element {
   const [username, setUsername] = useState('')
   const [email, setEmail] = useState('')
-  const [lock, setLock] = useState('')
   const [license, setLicense] = useState('')
-  const [expiresAt, setExpiresAt] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -22,22 +20,13 @@ export default function LicenseGate({ onActivated }: Props): JSX.Element {
     setError('')
     setLoading(true)
     try {
-      // expiresAt can be ISO from generator; if user pastes full package, try parse
-      let exp = expiresAt.trim()
-      if (!exp && license.includes('Expires:')) {
-        // ignore
-      }
-      if (!exp) {
-        setError('تاریخ انقضا (ISO) را از پنل لایسنس وارد کنید')
-        setLoading(false)
-        return
-      }
-      const res = await validateLicenseWithLock(username, email, lock, license, exp)
+      const res = await validateLicense(username, email, license)
       if (!res.ok) {
         const map: Record<string, string> = {
-          mismatch: 'لایسنس با این اطلاعات مطابقت ندارد',
+          mismatch: 'لایسنس با این نام کاربری / ایمیل مطابقت ندارد',
           expired: 'لایسنس منقضی شده است',
-          no_expiry: 'تاریخ انقضا مشخص نیست',
+          format: 'فرمت لایسنس نامعتبر است (TEIG2)',
+          payload: 'محتوای لایسنس قابل خواندن نیست',
           error: 'خطا در اعتبارسنجی'
         }
         setError(map[res.reason || ''] || 'اطلاعات نامعتبر است')
@@ -46,9 +35,9 @@ export default function LicenseGate({ onActivated }: Props): JSX.Element {
       }
       await window.api.setStore('licenseUsername', username.trim().replace(/^@/, '').toLowerCase())
       await window.api.setStore('licenseEmail', email.trim().toLowerCase())
-      await window.api.setStore('licenseLock', lock.trim())
       await window.api.setStore('licenseKey', license.trim())
-      await window.api.setStore('licenseExpiresAt', exp)
+      await window.api.setStore('licenseLock', res.lock || '')
+      await window.api.setStore('licenseExpiresAt', res.expiresAt || '')
       await window.api.setStore('licenseActivated', true)
       onActivated()
     } catch {
@@ -69,7 +58,7 @@ export default function LicenseGate({ onActivated }: Props): JSX.Element {
           <AppMark className="h-14 w-14" />
           <h1 className="text-sm font-semibold">فعال‌سازی TE IG Assist</h1>
           <p className="text-[11px] text-[hsl(var(--muted-foreground))]">
-            اطلاعات را از پنل license_generator کپی کنید
+            فقط نام کاربری، ایمیل و لایسنس کافی است
           </p>
         </div>
 
@@ -88,23 +77,9 @@ export default function LicenseGate({ onActivated }: Props): JSX.Element {
             onChange={(e) => setEmail(e.target.value)}
             dir="ltr"
           />
-          <input
-            className="input-field text-[12px]"
-            placeholder="قفل (Lock)"
-            value={lock}
-            onChange={(e) => setLock(e.target.value)}
-            dir="ltr"
-          />
-          <input
-            className="input-field text-[12px]"
-            placeholder="تاریخ انقضا ISO (مثلاً 2027-09-27T...)"
-            value={expiresAt}
-            onChange={(e) => setExpiresAt(e.target.value)}
-            dir="ltr"
-          />
           <textarea
-            className="input-field min-h-[90px] resize-none font-mono text-[10px]"
-            placeholder="لایسنس TEIG1...."
+            className="input-field min-h-[110px] resize-none font-mono text-[10px]"
+            placeholder="لایسنس TEIG2...."
             value={license}
             onChange={(e) => setLicense(e.target.value)}
             dir="ltr"
@@ -127,14 +102,14 @@ export default function LicenseGate({ onActivated }: Props): JSX.Element {
           ) : (
             <>
               <ShieldCheck className="h-4 w-4" />
-              فعال‌سازی
+              ورود
             </>
           )}
         </button>
 
         <p className="flex items-center justify-center gap-1 text-[10px] text-[hsl(var(--muted-foreground))]">
           <KeyRound className="h-3 w-3" />
-          مسیر پنل: /license_generator/
+          پنل صدور: license_generator/
         </p>
       </motion.div>
     </div>

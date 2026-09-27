@@ -9,7 +9,7 @@ import LicenseGate from './components/LicenseGate'
 import { AppMark } from './components/AboutPanel'
 import { cn } from './lib/utils'
 import { autoReplyController } from './lib/autoReplyController'
-import { validateLicenseWithLock } from './lib/license'
+import { validateLicense } from './lib/license'
 
 export type TabId = 'settings' | 'memory' | 'rules' | 'about'
 
@@ -23,16 +23,14 @@ function App(): JSX.Element {
 
   useEffect(() => {
     void (async () => {
-      const [en, cycle, interval, activated, u, e, lock, key, exp] = await Promise.all([
+      const [en, cycle, interval, activated, u, e, key] = await Promise.all([
         window.api.getStore('autoReplyEnabled'),
         window.api.getStore('autoCycle'),
         window.api.getStore('cycleIntervalMs'),
         window.api.getStore('licenseActivated'),
         window.api.getStore('licenseUsername'),
         window.api.getStore('licenseEmail'),
-        window.api.getStore('licenseLock'),
-        window.api.getStore('licenseKey'),
-        window.api.getStore('licenseExpiresAt')
+        window.api.getStore('licenseKey')
       ])
       setAutoReplyEnabled(Boolean(en))
       setAutoCycle(cycle !== false)
@@ -40,19 +38,14 @@ function App(): JSX.Element {
       autoReplyController.setAutoCycle(cycle !== false)
       if (typeof interval === 'number') autoReplyController.setCycleIntervalMs(interval)
 
-      if (
-        activated &&
-        typeof u === 'string' &&
-        typeof e === 'string' &&
-        typeof lock === 'string' &&
-        typeof key === 'string' &&
-        typeof exp === 'string'
-      ) {
-        const ok = await validateLicenseWithLock(u, e, lock, key, exp)
+      if (activated && typeof u === 'string' && typeof e === 'string' && typeof key === 'string') {
+        const ok = await validateLicense(u, e, key)
         setLicensed(ok.ok)
-        if (!ok.ok) {
-          await window.api.setStore('licenseActivated', false)
+        if (ok.ok && ok.expiresAt) {
+          await window.api.setStore('licenseExpiresAt', ok.expiresAt)
+          if (ok.lock) await window.api.setStore('licenseLock', ok.lock)
         }
+        if (!ok.ok) await window.api.setStore('licenseActivated', false)
       } else {
         setLicensed(false)
       }
