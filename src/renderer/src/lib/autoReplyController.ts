@@ -1,11 +1,20 @@
 import { generateSmartReply, generateCommentReply, type IncomingMessage } from './replyEngine'
-import type { DmFilter, FeatureDelays, FeatureFlags, KeywordRule } from './types'
+import type {
+  DmFilter,
+  FeatureDelays,
+  FeatureFlags,
+  KeywordRule,
+  SafetySettings
+} from './types'
 import {
   DEFAULT_DELAYS,
   DEFAULT_DM_FILTER,
   DEFAULT_FLAGS,
+  DEFAULT_SAFETY,
   extractUsernameFromPreview,
-  isDmUserAllowed
+  isDmUserAllowed,
+  isWithinWorkingHours,
+  todayKey
 } from './types'
 
 export type ActivityLevel = 'info' | 'success' | 'warn' | 'error'
@@ -14,6 +23,15 @@ export interface ActivityItem {
   id: string
   level: ActivityLevel
   message: string
+  at: number
+}
+
+export interface ApprovalItem {
+  id: string
+  channel: 'dm' | 'comment'
+  incoming: string
+  draft: string
+  username?: string
   at: number
 }
 
@@ -40,7 +58,6 @@ interface Task {
   payload: Record<string, unknown>
 }
 
-/** key -> last preview fingerprint we already processed */
 interface HandledMeta {
   previewFp: string
   at: number
@@ -62,6 +79,8 @@ export class AutoReplyController {
   private handledThreads = new Map<string, HandledMeta>()
   private activities: ActivityItem[] = []
   private listeners = new Set<(items: ActivityItem[]) => void>()
+  private approvals: ApprovalItem[] = []
+  private approvalListeners = new Set<(items: ApprovalItem[]) => void>()
   private pollTimer: ReturnType<typeof setInterval> | null = null
   private webview: WebviewLike | null = null
   private injectorSource = ''
@@ -71,6 +90,8 @@ export class AutoReplyController {
   private flags: FeatureFlags = { ...DEFAULT_FLAGS }
   private delays: FeatureDelays = { ...DEFAULT_DELAYS }
   private dmFilter: DmFilter = { ...DEFAULT_DM_FILTER, users: [] }
+  private safety: SafetySettings = { ...DEFAULT_SAFETY }
+  private dailyStats = { day: '', dm: 0, comment: 0 }
   private keywordRules: KeywordRule[] = []
   private pendingDmAfterNav: { username: string; text: string } | null = null
 
@@ -96,9 +117,7 @@ export class AutoReplyController {
   }
 
   setCycleIntervalMs(ms: number): void {
-    const next = Math.max(15_000, Math.min(30 * 60_000, ms))
-    if (this.cycleIntervalMs === next) return
-    this.cycleIntervalMs = next
+    this.cycleIntervalMs = Math.max(15_000, Math.min(30 * 60_000, ms))
   }
 
   setMemory(m: string): void {
@@ -124,6 +143,14 @@ export class AutoReplyController {
     }
   }
 
+  setSafety(s: Partial<SafetySettings>): void {
+    this.safety = { ...this.safety, ...s }
+  }
+
+  setDailyStats(stats: { day: string; dm: number; comment: number }): void {
+    this.dailyStats = { ...stats }
+  }
+
   setKeywordRules(rules: KeywordRule[]): void {
     this.keywordRules = Array.isArray(rules) ? rules : []
   }
@@ -142,7 +169,6 @@ export class AutoReplyController {
     this.phase = 'idle'
     this.tasks = []
     this.unreadPass = 0
-    // Allow re-checking all unreads (new messages)
     this.handledThreads.clear()
     void this.maybeScheduleCycle(true)
   }
@@ -155,6 +181,53 @@ export class AutoReplyController {
     this.listeners.add(fn)
     fn(this.getActivities())
     return () => this.listeners.delete(fn)
+  }
+
+  getApprovals(): ApprovalItem[] {
+    return [...this.approvals]
+  }
+
+  subscribeApprovals(fn: (items: ApprovalItem[]) => void): () => void {
+    this.approvalListeners.add(fn)
+    fn(this.getApprovals())
+    return () => this.approvalListeners.delete(fn)
+  }
+
+  private notifyApprovals(): void {
+    const list = this.getApprovals()
+    this.approvalListeners.forEach((fn) => fn(list))
+  }
+
+  approveReply(id: string, editedText?: string): void {
+    const item = this.approvals.find((a) => a.id === id)
+    if (!item) return
+    this.approvals = this.approvals.filter((a) => a.id !== id)
+    this.notifyApprovals()
+    const text = (editedText ?? item.draft).trim()
+    if (!text) return
+    this.enqueueTask(
+      item.channel === 'dm' ? 'reply_dm' : 'reply_comment',
+      {
+        msgId: item.id,
+        item: {
+          id: item.id,
+          text: item.incoming,
+          timestamp: Date.now(),
+          channel: item.channel,
+          username: item.username
+        } as PendingItem,
+        forcedText: text,
+        skipPreview: true
+      },
+      300
+    )
+  }
+
+  rejectReply(id: string): void {
+    this.approvals = this.approvals.filter((a) => a.id !== id)
+    this.repliedIds.add(id)
+    this.notifyApprovals()
+    this.pushActivity('info', 'پاسخ پیشنهادی رد شد')
   }
 
   private pushActivity(level: ActivityLevel, message: string): void {
@@ -187,13 +260,11 @@ export class AutoReplyController {
     return u ? `u:${u}` : `p:${this.previewFp(preview).slice(0, 40)}`
   }
 
-  /** Skip only if same preview was already handled (new message = new preview → reopen) */
   private isStillHandled(key: string, preview: string): boolean {
     const meta = this.handledThreads.get(key)
     if (!meta) return false
     const fp = this.previewFp(preview)
     if (fp && fp !== meta.previewFp) return false
-    // expire soft handles after 8 minutes without successful reply
     if (!meta.replied && Date.now() - meta.at > 8 * 60_000) return false
     return true
   }
@@ -209,6 +280,37 @@ export class AutoReplyController {
       const first = this.handledThreads.keys().next().value
       if (first) this.handledThreads.delete(first)
     }
+  }
+
+  private ensureDailyDay(): void {
+    const k = todayKey()
+    if (this.dailyStats.day !== k) {
+      this.dailyStats = { day: k, dm: 0, comment: 0 }
+      void window.api.setStore('dailyStats', this.dailyStats)
+    }
+  }
+
+  private withinHours(): boolean {
+    return isWithinWorkingHours(
+      this.safety.workingHoursEnabled,
+      this.safety.workStartHour,
+      this.safety.workEndHour
+    )
+  }
+
+  private canSend(channel: 'dm' | 'comment'): boolean {
+    if (!this.safety.dailyLimitEnabled) return true
+    this.ensureDailyDay()
+    if (channel === 'dm') return this.dailyStats.dm < this.safety.dailyLimitDm
+    return this.dailyStats.comment < this.safety.dailyLimitComment
+  }
+
+  private async bumpDaily(channel: 'dm' | 'comment'): Promise<void> {
+    if (!this.safety.dailyLimitEnabled) return
+    this.ensureDailyDay()
+    if (channel === 'dm') this.dailyStats.dm += 1
+    else this.dailyStats.comment += 1
+    await window.api.setStore('dailyStats', this.dailyStats)
   }
 
   bindWebview(webview: WebviewLike, injectorSource: string): void {
@@ -237,22 +339,17 @@ export class AutoReplyController {
   private async tick(): Promise<void> {
     const wv = this.webview
     if (!wv) return
-
     try {
       const has = await this.exec<boolean>('!!(window.__TE_IG_POLL__ && window.__TE_IG_SEND_REPLY__)')
-      if (!has && this.injectorSource) {
-        await wv.executeJavaScript(this.injectorSource)
-      }
+      if (!has && this.injectorSource) await wv.executeJavaScript(this.injectorSource)
 
       const status = await this.exec<{ path?: string; ready?: boolean; peer?: string }>(
         'window.__TE_IG_STATUS__ ? window.__TE_IG_STATUS__() : null'
       )
-
       if (status?.ready && status.path && status.path !== this.lastReadyPath) {
         this.lastReadyPath = status.path
         this.pushActivity('info', `مانیتور — ${status.path}`)
       }
-
       if (this.pendingDmAfterNav && status?.path?.includes(`/${this.pendingDmAfterNav.username}`)) {
         await this.tryClickMessageAndSend(this.pendingDmAfterNav.text)
         this.pendingDmAfterNav = null
@@ -260,14 +357,7 @@ export class AutoReplyController {
 
       const batch =
         (await this.exec<
-          Array<{
-            id: string
-            text: string
-            kind: string
-            username?: string
-            isMention?: boolean
-            path?: string
-          }>
+          Array<{ id: string; text: string; kind: string; username?: string; isMention?: boolean; path?: string }>
         >('window.__TE_IG_POLL__ ? window.__TE_IG_POLL__() : []')) || []
 
       for (const item of batch) {
@@ -304,23 +394,34 @@ export class AutoReplyController {
         await this.maybeScheduleCycle(false)
       }
     } catch {
-      // ignore
+      /* ignore */
     }
   }
 
   private scheduleReply(item: PendingItem): void {
     if (this.repliedIds.has(item.id) || this.inFlightIds.has(item.id)) return
     if (this.tasks.some((t) => t.payload['msgId'] === item.id)) return
+    if (this.approvals.some((a) => a.id === item.id)) return
 
     if (/^reacted\s+/i.test(item.text.trim()) || /reacted .* to your message/i.test(item.text)) {
       this.repliedIds.add(item.id)
       return
     }
 
+    if (!this.withinHours()) {
+      this.pushActivity('warn', 'خارج از ساعات کاری — پاسخ متوقف')
+      return
+    }
+
+    if (!this.canSend(item.channel === 'dm' ? 'dm' : 'comment')) {
+      this.pushActivity('warn', 'سقف روزانه پاسخ پر شده است')
+      return
+    }
+
     if (item.channel === 'dm') {
       const u = item.username || ''
       if (!u && this.dmFilter.mode === 'whitelist') {
-        this.pushActivity('warn', 'یوزرنیم طرف مقابل مشخص نیست — رد موقت (وایت‌لیست)')
+        this.pushActivity('warn', 'یوزرنیم مشخص نیست — رد موقت (وایت‌لیست)')
         return
       }
       if (!isDmUserAllowed(u || undefined, this.dmFilter)) {
@@ -333,6 +434,28 @@ export class AutoReplyController {
         )
         return
       }
+    }
+
+    const draft =
+      item.channel === 'dm'
+        ? generateSmartReply(item.text, this.memory, this.logic).text
+        : generateCommentReply(item.text, this.memory, this.logic)
+
+    if (this.flags.previewBeforeSend) {
+      this.approvals = [
+        {
+          id: item.id,
+          channel: item.channel,
+          incoming: item.text,
+          draft,
+          username: item.username,
+          at: Date.now()
+        },
+        ...this.approvals
+      ].slice(0, 30)
+      this.notifyApprovals()
+      this.pushActivity('info', `در انتظار تأیید: ${item.text.slice(0, 32)}…`)
+      return
     }
 
     const delay = item.channel === 'dm' ? this.delays.delayDmsMs : this.delays.delayCommentsMs
@@ -354,7 +477,6 @@ export class AutoReplyController {
     const now = Date.now()
     const due = this.tasks.filter((t) => t.executeAt <= now)
     if (!due.length) return
-
     this.processing = true
     try {
       due.sort((a, b) => a.executeAt - b.executeAt)
@@ -392,7 +514,6 @@ export class AutoReplyController {
         }
 
         if (!chosen) {
-          // try native first unread once
           const res = await this.exec<{
             ok?: boolean
             reason?: string
@@ -407,13 +528,11 @@ export class AutoReplyController {
           const uname = res.username || extractUsernameFromPreview(res.preview || '')
           const key = this.threadKeyFromPreview(res.preview || '', uname)
           if (this.isStillHandled(key, res.preview || '')) {
-            this.pushActivity('info', 'همان پیش‌نمایش قبلاً بررسی شده — رد')
             this.enqueueTask('back_inbox', {}, 600)
             break
           }
           if (uname && !isDmUserAllowed(uname, this.dmFilter)) {
             this.markThreadHandled(key, res.preview || '', true)
-            this.pushActivity('info', `رد گفتگو (فیلتر لیست): @${uname}`)
             this.enqueueTask('back_inbox', {}, 600)
             break
           }
@@ -421,11 +540,11 @@ export class AutoReplyController {
           this.currentPreview = res.preview || ''
           this.pushActivity('info', `باز شد: ${(res.preview || '').slice(0, 52)}`)
           this.enqueueTask('force_scan', { threadKey: key, preview: res.preview || '' }, 2200)
-          this.enqueueTask('force_scan', { threadKey: key, preview: res.preview || '' }, 4500)
+          this.enqueueTask('force_scan', { threadKey: key, preview: res.preview || '' }, 4800)
           this.enqueueTask(
             'back_inbox',
             { threadKey: key, preview: res.preview || '', finalize: true },
-            9000
+            11000
           )
           break
         }
@@ -437,18 +556,17 @@ export class AutoReplyController {
         this.currentThreadKey = key
         this.currentPreview = chosen.preview
         if (!openRes?.ok) {
-          this.pushActivity('warn', 'باز کردن گفتگو ناموفق')
           this.markThreadHandled(key, chosen.preview, false)
           this.enqueueTask('back_inbox', {}, 600)
           break
         }
         this.pushActivity('info', `باز شد: ${chosen.preview.slice(0, 52)}`)
         this.enqueueTask('force_scan', { threadKey: key, preview: chosen.preview }, 2200)
-        this.enqueueTask('force_scan', { threadKey: key, preview: chosen.preview }, 4500)
+        this.enqueueTask('force_scan', { threadKey: key, preview: chosen.preview }, 4800)
         this.enqueueTask(
           'back_inbox',
           { threadKey: key, preview: chosen.preview, finalize: true },
-          9000
+          11000
         )
         break
       }
@@ -458,7 +576,6 @@ export class AutoReplyController {
         const info = await this.exec<{
           dmNodes?: number
           queued?: number
-          method?: string
           peer?: string
           hasAttachment?: boolean
         }>('window.__TE_IG_FORCE_SCAN_THREAD__ ? window.__TE_IG_FORCE_SCAN_THREAD__() : null')
@@ -470,13 +587,14 @@ export class AutoReplyController {
 
         const batch =
           (await this.exec<
-            Array<{ id: string; text: string; kind: string; username?: string; isAttachment?: boolean }>
+            Array<{ id: string; text: string; kind: string; username?: string }>
           >('window.__TE_IG_POLL__ ? window.__TE_IG_POLL__() : []')) || []
 
         let queuedReplies = 0
+        // reply-all: schedule every dm_incoming (controller de-dupes)
         for (const item of batch) {
           if (item.kind === 'dm_incoming' && this.flags.autoReplyDms) {
-            const before = this.tasks.length
+            const before = this.tasks.length + this.approvals.length
             this.scheduleReply({
               id: item.id,
               text: item.text,
@@ -484,12 +602,14 @@ export class AutoReplyController {
               channel: 'dm',
               username: item.username || info?.peer
             })
-            if (this.tasks.length > before) queuedReplies++
+            if (this.tasks.length + this.approvals.length > before) queuedReplies++
           }
         }
 
-        // Attachment / shared post with no text bubble: still react via logic
-        if ((info?.hasAttachment || /attachment|sent an attach/i.test(preview)) && queuedReplies === 0) {
+        if (
+          (info?.hasAttachment || /attachment|sent an attach/i.test(preview)) &&
+          queuedReplies === 0
+        ) {
           const syntheticId = `attach|${threadKey}|${this.previewFp(preview)}`
           if (!this.repliedIds.has(syntheticId)) {
             this.scheduleReply({
@@ -503,9 +623,8 @@ export class AutoReplyController {
           }
         }
 
-        if (queuedReplies === 0 && (info?.queued ?? 0) === 0) {
-          // soft handle — same preview only
-          if (threadKey) this.markThreadHandled(threadKey, preview, false)
+        if (queuedReplies === 0 && (info?.queued ?? 0) === 0 && threadKey) {
+          this.markThreadHandled(threadKey, preview, false)
         }
         break
       }
@@ -514,11 +633,9 @@ export class AutoReplyController {
         const preview = String(task.payload['preview'] || this.currentPreview || '')
         const finalize = Boolean(task.payload['finalize'])
         if (finalize && threadKey) {
-          // only soft-mark if no pending reply tasks for this pass
           const pendingDm = this.tasks.some((t) => t.kind === 'reply_dm')
           if (!pendingDm) this.markThreadHandled(threadKey, preview, false)
         }
-
         await this.exec('window.__TE_IG_GOTO__ && window.__TE_IG_GOTO__("/direct/inbox/")')
         await sleep(2200)
         this.unreadPass += 1
@@ -543,14 +660,16 @@ export class AutoReplyController {
       }
       case 'reply_dm': {
         const item = task.payload['item'] as PendingItem
+        const forcedText = task.payload['forcedText'] as string | undefined
         if (!item || this.repliedIds.has(item.id)) return
-        await this.handleDm(item)
+        await this.handleDm(item, forcedText)
         break
       }
       case 'reply_comment': {
         const item = task.payload['item'] as PendingItem
+        const forcedText = task.payload['forcedText'] as string | undefined
         if (!item || this.repliedIds.has(item.id)) return
-        await this.handleComment(item)
+        await this.handleComment(item, forcedText)
         break
       }
       case 'open_activity_item': {
@@ -569,6 +688,12 @@ export class AutoReplyController {
     if (!force && now - this.lastCycleAt < this.cycleIntervalMs) return
     if (this.tasks.length > 0) return
 
+    if (!this.withinHours()) {
+      this.pushActivity('info', 'خارج از ساعات کاری — چرخه رد شد')
+      this.lastCycleAt = now
+      return
+    }
+
     this.cycleBusy = true
     this.lastCycleAt = now
     this.unreadPass = 0
@@ -579,17 +704,6 @@ export class AutoReplyController {
         this.pushActivity('info', force ? 'فورس: بررسی unread…' : 'بررسی دایرکت‌های unread…')
         await this.exec('window.__TE_IG_GOTO__ && window.__TE_IG_GOTO__("/direct/inbox/")')
         await sleep(3200)
-
-        // scroll inbox a bit to load rows
-        await this.exec(`
-          (function(){
-            var sc = document.querySelector('div[role="main"]') || document.scrollingElement;
-            if (sc) { sc.scrollTop = 0; }
-            var box = document.querySelector('[role="listbox"], [aria-label*="Messages"], div[role="main"]');
-            if (box) { box.scrollTop = 0; }
-          })()
-        `)
-        await sleep(800)
 
         const list =
           (await this.exec<Array<{ preview: string; username?: string }>>(
@@ -651,69 +765,61 @@ export class AutoReplyController {
     }
   }
 
-  private async handleDm(msg: PendingItem): Promise<void> {
+  private async handleDm(msg: PendingItem, forcedText?: string): Promise<void> {
     if (this.repliedIds.has(msg.id)) return
+    if (!this.canSend('dm')) {
+      this.pushActivity('warn', 'سقف روزانه دایرکت')
+      return
+    }
     this.repliedIds.add(msg.id)
     this.inFlightIds.add(msg.id)
 
     const result = generateSmartReply(msg.text, this.memory, this.logic)
-    if (result.matchedLogic) {
-      this.pushActivity('info', `منطق: ${result.matchedLogic.slice(0, 56)}`)
-    }
+    if (result.matchedLogic) this.pushActivity('info', `منطق: ${result.matchedLogic.slice(0, 56)}`)
 
-    // React with heart on shared post / attachment
     if (result.actions.includes('react_heart') || result.actions.includes('like_shared')) {
       const reacted = await this.exec<{ ok?: boolean; via?: string }>(
         'window.__TE_IG_REACT_HEART__ ? window.__TE_IG_REACT_HEART__() : ({ok:false})'
       )
-      if (reacted?.ok) {
-        this.pushActivity('success', `ری‌اکت قلب انجام شد${reacted.via ? ' (' + reacted.via + ')' : ''}`)
-      } else {
+      if (reacted?.ok) this.pushActivity('success', `ری‌اکت قلب (${reacted.via || ''})`)
+      else {
         const liked = await this.exec<{ ok?: boolean }>(
           'window.__TE_IG_LIKE_SHARED__ ? window.__TE_IG_LIKE_SHARED__() : ({ok:false})'
         )
-        if (liked?.ok) this.pushActivity('success', 'لایک رسانه انجام شد')
-        else this.pushActivity('warn', 'ری‌اکت/لایک پیدا نشد')
+        if (liked?.ok) this.pushActivity('success', 'لایک رسانه')
       }
     }
 
-    // For pure attachment synthetic messages, optional short reply if engine produced text
+    const text = (forcedText || result.text).trim()
     const isAttachOnly = msg.text === '[shared_post_or_attachment]'
-    if (isAttachOnly && (!result.text || result.text === 'پیامتون رو دیدم ✅')) {
-      // still send a warm short reply if memory/logic suggests friendliness
-      const warm = generateSmartReply('سلام', this.memory, this.logic)
-      if (warm.text && !warm.text.includes('پیامتون')) {
-        this.pushActivity('info', `پاسخ: ${warm.text.slice(0, 48)}`)
-        const sent = await this.sendDm(warm.text)
-        this.inFlightIds.delete(msg.id)
-        if (sent.ok) {
-          this.pushActivity('success', 'پاسخ دایرکت ارسال شد')
-          if (this.currentThreadKey)
-            this.markThreadHandled(this.currentThreadKey, this.currentPreview, true)
-        }
-        return
-      }
+    if (isAttachOnly && !forcedText && (!text || text === 'پیامتون رو دیدم ✅')) {
       this.inFlightIds.delete(msg.id)
       if (this.currentThreadKey)
         this.markThreadHandled(this.currentThreadKey, this.currentPreview, true)
       return
     }
 
-    this.pushActivity('info', `پاسخ: ${result.text.slice(0, 48)}`)
-    const sent = await this.sendDm(result.text)
+    this.pushActivity('info', `پاسخ: ${text.slice(0, 48)}`)
+    const sent = await this.sendDm(text)
     this.inFlightIds.delete(msg.id)
     if (sent.ok) {
+      await this.bumpDaily('dm')
       this.pushActivity('success', 'پاسخ دایرکت ارسال شد')
       if (this.currentThreadKey)
         this.markThreadHandled(this.currentThreadKey, this.currentPreview, true)
-      if (msg.username) this.markThreadHandled(`u:${msg.username.toLowerCase()}`, this.currentPreview, true)
+      if (msg.username)
+        this.markThreadHandled(`u:${msg.username.toLowerCase()}`, this.currentPreview, true)
     } else if (sent.reason === 'no_compose') {
       this.repliedIds.delete(msg.id)
       this.pushActivity('warn', 'باکس پیام نیست')
     } else this.pushActivity('error', `ارسال ناموفق: ${sent.reason}`)
   }
 
-  private async handleComment(msg: PendingItem): Promise<void> {
+  private async handleComment(msg: PendingItem, forcedText?: string): Promise<void> {
+    if (!this.canSend('comment')) {
+      this.pushActivity('warn', 'سقف روزانه کامنت')
+      return
+    }
     const rule = this.matchKeywordRule(msg.text)
     if (!rule) {
       if (msg.isMention && !this.flags.replyMentions) {
@@ -727,11 +833,15 @@ export class AutoReplyController {
     }
     this.repliedIds.add(msg.id)
     const commentText =
-      rule?.commentReply?.trim() || generateCommentReply(msg.text, this.memory, this.logic)
+      forcedText ||
+      rule?.commentReply?.trim() ||
+      generateCommentReply(msg.text, this.memory, this.logic)
     this.pushActivity('info', `پاسخ کامنت: ${commentText.slice(0, 40)}`)
     const result = await this.sendComment(commentText, msg.text)
-    if (result.ok) this.pushActivity('success', 'پاسخ کامنت ارسال شد')
-    else this.pushActivity('error', `کامنت ناموفق: ${result.reason}`)
+    if (result.ok) {
+      await this.bumpDaily('comment')
+      this.pushActivity('success', 'پاسخ کامنت ارسال شد')
+    } else this.pushActivity('error', `کامنت ناموفق: ${result.reason}`)
     if (rule?.dmMessage?.trim() && msg.username) {
       this.pendingDmAfterNav = { username: msg.username, text: rule.dmMessage.trim() }
       await this.exec(`window.__TE_IG_OPEN_DM__ && window.__TE_IG_OPEN_DM__(${JSON.stringify(msg.username)})`)
