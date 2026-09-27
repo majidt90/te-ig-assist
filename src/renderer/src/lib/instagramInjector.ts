@@ -1,5 +1,5 @@
 /**
- * Instagram injector — unread-only, force scan after open.
+ * Instagram injector — unread-only, force scan, peer username on DM events.
  */
 
 export const INJECTOR_SOURCE = `
@@ -11,7 +11,7 @@ export const INJECTOR_SOURCE = `
   var lastSendAt = 0;
   var MIN_SEND_GAP_MS = 4000;
   var lastSentText = '';
-  var lastScanInfo = { path: '', dmNodes: 0, queued: 0, thread: false, method: '' };
+  var lastScanInfo = { path: '', dmNodes: 0, queued: 0, thread: false, method: '', peer: '' };
 
   function path() { return location.pathname || ''; }
   function isDirectPage() { return /\\/direct\\//i.test(path()); }
@@ -33,6 +33,47 @@ export const INJECTOR_SOURCE = `
   function markSeen(fp) {
     SEEN.add(fp);
     if (SEEN.size > 1500) SEEN.delete(SEEN.values().next().value);
+  }
+
+  /** Peer username for open DM thread */
+  function getThreadUsername() {
+    var blocked = /^(p|reel|stories|direct|explore|accounts|inbox|t|reels|stories|about|legal)$/i;
+    var scopes = [
+      document.querySelector('div[role="main"] header'),
+      document.querySelector('section header'),
+      document.querySelector('header')
+    ];
+    for (var s = 0; s < scopes.length; s++) {
+      var root = scopes[s];
+      if (!root) continue;
+      var links = root.querySelectorAll('a[href^="/"]');
+      for (var i = 0; i < links.length; i++) {
+        var href = links[i].getAttribute('href') || '';
+        var m = href.match(/^\\/([A-Za-z0-9._]+)\\/?$/);
+        if (m && !blocked.test(m[1])) return m[1];
+      }
+    }
+    // fallback: any profile link near top of main
+    var all = document.querySelectorAll('div[role="main"] a[href^="/"]');
+    for (var j = 0; j < Math.min(all.length, 20); j++) {
+      try {
+        var r = all[j].getBoundingClientRect();
+        if (r.top > 120) continue;
+        var h = all[j].getAttribute('href') || '';
+        var m2 = h.match(/^\\/([A-Za-z0-9._]+)\\/?$/);
+        if (m2 && !blocked.test(m2[1])) return m2[1];
+      } catch (e) {}
+    }
+    return '';
+  }
+
+  function usernameFromPreview(preview) {
+    var t = (preview || '').trim();
+    // first token often username / display
+    var first = t.split(/\\s+/)[0] || '';
+    first = first.replace(/^@/, '');
+    if (/^[A-Za-z0-9._]{2,30}$/.test(first)) return first;
+    return '';
   }
 
   function isProbablyOutgoing(el) {
@@ -70,7 +111,6 @@ export const INJECTOR_SOURCE = `
   function isUnreadRow(row) {
     if (!row) return false;
     var preview = (row.innerText || '').replace(/\\s+/g, ' ');
-    // Not unread for us if only our outbound is highlighted
     if (isYouSentPreview(preview) && !/\\d+\\s*new message/i.test(preview) && !/Unread/i.test(preview)) {
       return false;
     }
@@ -118,6 +158,7 @@ export const INJECTOR_SOURCE = `
   }
 
   function queueIncomingFromNodes(nodes, forceLast) {
+    var peer = getThreadUsername();
     var classified = nodes.map(function (n) {
       return { text: n.text, outgoing: isProbablyOutgoing(n.el) };
     });
@@ -135,17 +176,28 @@ export const INJECTOR_SOURCE = `
       if (!forceLast && SEEN.has(fp)) continue;
       markSeen(fp);
       if (lastSentText && item.text.indexOf(lastSentText.slice(0, 24)) !== -1) continue;
-      PENDING.push({ id: fp + (forceLast ? '|f' : ''), text: item.text, kind: 'dm_incoming', channel: 'dm' });
+      PENDING.push({
+        id: fp + (forceLast ? '|f' : ''),
+        text: item.text,
+        kind: 'dm_incoming',
+        channel: 'dm',
+        username: peer
+      });
       queued++;
     }
 
-    // Force: always try last non-outgoing bubble
     if (forceLast && queued === 0 && classified.length) {
       for (var i = classified.length - 1; i >= 0; i--) {
         if (classified[i].outgoing) continue;
         var fp2 = fingerprint(classified[i].text, 'dm');
         markSeen(fp2);
-        PENDING.push({ id: fp2 + '|force', text: classified[i].text, kind: 'dm_incoming', channel: 'dm' });
+        PENDING.push({
+          id: fp2 + '|force',
+          text: classified[i].text,
+          kind: 'dm_incoming',
+          channel: 'dm',
+          username: peer
+        });
         queued++;
         break;
       }
@@ -154,20 +206,21 @@ export const INJECTOR_SOURCE = `
     for (var m = 0; m < startIdx && m < classified.length; m++) {
       markSeen(fingerprint(classified[m].text, 'dm'));
     }
+    lastScanInfo.peer = peer;
     return queued;
   }
 
   function scanDms(force) {
     if (!isDirectPage() && !hasCompose()) {
-      lastScanInfo = { path: path(), dmNodes: 0, queued: 0, thread: false, method: 'skip' };
+      lastScanInfo = { path: path(), dmNodes: 0, queued: 0, thread: false, method: 'skip', peer: '' };
       return;
     }
     if (isInbox() && !hasCompose()) {
-      lastScanInfo = { path: path(), dmNodes: 0, queued: 0, thread: false, method: 'inbox_only' };
+      lastScanInfo = { path: path(), dmNodes: 0, queued: 0, thread: false, method: 'inbox_only', peer: '' };
       return;
     }
     var nodes = collectDmCandidates();
-    lastScanInfo = { path: path(), dmNodes: nodes.length, queued: 0, thread: true, method: force ? 'force' : 'tail' };
+    lastScanInfo = { path: path(), dmNodes: nodes.length, queued: 0, thread: true, method: force ? 'force' : 'tail', peer: '' };
     if (!nodes.length) return;
     lastScanInfo.queued = queueIncomingFromNodes(nodes, !!force);
   }
@@ -227,6 +280,7 @@ export const INJECTOR_SOURCE = `
       thread: isThread(),
       post: isPostPage(),
       hasCompose: hasCompose(),
+      peer: getThreadUsername(),
       lastScan: lastScanInfo
     };
   };
@@ -244,7 +298,12 @@ export const INJECTOR_SOURCE = `
       var preview = (row.innerText || '').replace(/\\s+/g, ' ').trim();
       if (isYouSentPreview(preview) && !/\\d+\\s*new message/i.test(preview)) continue;
       seenHref[href] = true;
-      rows.push({ el: a, href: href, preview: preview.slice(0, 100) });
+      rows.push({
+        el: a,
+        href: href,
+        preview: preview.slice(0, 100),
+        username: usernameFromPreview(preview)
+      });
     }
     if (!rows.length) {
       var candidates = document.querySelectorAll(
@@ -260,7 +319,7 @@ export const INJECTOR_SOURCE = `
         if (!isUnreadRow(el)) continue;
         var prev = (el.innerText || '').replace(/\\s+/g, ' ').trim();
         if (isYouSentPreview(prev) && !/\\d+\\s*new message/i.test(prev)) continue;
-        rows.push({ el: el, href: '', preview: prev.slice(0, 100) });
+        rows.push({ el: el, href: '', preview: prev.slice(0, 100), username: usernameFromPreview(prev) });
       }
     }
     return rows;
@@ -269,25 +328,36 @@ export const INJECTOR_SOURCE = `
   window.__TE_IG_LIST_CONVERSATIONS__ = function () {
     var rows = collectUnreadRows();
     return rows.map(function (r, idx) {
-      return { index: idx, preview: r.preview, href: r.href, unread: true };
+      return { index: idx, preview: r.preview, href: r.href, unread: true, username: r.username || '' };
     });
   };
 
   window.__TE_IG_LIST_UNREAD__ = window.__TE_IG_LIST_CONVERSATIONS__;
 
-  /** Always open the first remaining unread (stable after list shrinks) */
   window.__TE_IG_OPEN_FIRST_UNREAD__ = function () {
     var rows = collectUnreadRows();
     if (!rows.length) return { ok: false, reason: 'no_unread', total: 0 };
     rows[0].el.click();
-    return { ok: true, via: 'first_unread', total: rows.length, preview: rows[0].preview };
+    return {
+      ok: true,
+      via: 'first_unread',
+      total: rows.length,
+      preview: rows[0].preview,
+      username: rows[0].username || ''
+    };
   };
 
   window.__TE_IG_OPEN_CONV_INDEX__ = function (index) {
     var rows = collectUnreadRows();
     if (!rows[index]) return { ok: false, reason: 'no_unread', total: rows.length };
     rows[index].el.click();
-    return { ok: true, via: 'index', total: rows.length, preview: rows[index].preview };
+    return {
+      ok: true,
+      via: 'index',
+      total: rows.length,
+      preview: rows[index].preview,
+      username: rows[index].username || ''
+    };
   };
 
   window.__TE_IG_OPEN_HREF__ = function (href) {
