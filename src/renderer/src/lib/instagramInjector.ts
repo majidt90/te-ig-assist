@@ -1,7 +1,5 @@
 /**
- * Instagram guest injector.
- * Critical fix: after opening a thread, bootstrap must NOT drop unanswered
- * incoming messages — only messages AFTER our last outgoing are queued.
+ * Instagram guest injector — resilient DM detection.
  */
 
 export const INJECTOR_SOURCE = `
@@ -11,15 +9,18 @@ export const INJECTOR_SOURCE = `
   var PENDING = window.__TE_IG_PENDING__ || [];
   window.__TE_IG_PENDING__ = PENDING;
   var lastSendAt = 0;
-  var MIN_SEND_GAP_MS = 4500;
+  var MIN_SEND_GAP_MS = 4000;
   var lastSentText = '';
-  var lastScanInfo = { path: '', dmNodes: 0, queued: 0, thread: false };
+  var lastScanInfo = { path: '', dmNodes: 0, queued: 0, thread: false, method: '' };
 
   function path() { return location.pathname || ''; }
   function isDirectPage() { return /\\/direct\\//i.test(path()); }
   function isPostPage() { return /\\/(p|reel)\\//i.test(path()); }
   function isInbox() { return /\\/direct\\/(inbox)?\\/?$/i.test(path()) || path() === '/direct'; }
-  function isThread() { return /\\/direct\\/t\\//i.test(path()); }
+  function isThread() {
+    return /\\/direct\\/t\\//i.test(path()) ||
+      !!document.querySelector('div[role="textbox"][contenteditable="true"]');
+  }
 
   function fingerprint(text, extra) {
     return (String(text).replace(/\\s+/g, ' ').trim().slice(0, 120) + '|' + String(extra || '')).slice(0, 160);
@@ -30,123 +31,159 @@ export const INJECTOR_SOURCE = `
     if (SEEN.size > 1200) SEEN.delete(SEEN.values().next().value);
   }
 
-  /** Outgoing = our bubbles (right side in LTR IG web) */
   function isProbablyOutgoing(el) {
     try {
       var rect = el.getBoundingClientRect();
       var vw = window.innerWidth || 800;
-      // Center of bubble in right 40% of viewport
       var mid = rect.left + rect.width / 2;
-      if (mid > vw * 0.58) return true;
-      if (mid < vw * 0.42) return false;
+      if (mid > vw * 0.56) return true;
+      if (mid < vw * 0.44) return false;
     } catch (e) {}
-    return false;
-  }
 
-  function hasBlueUnreadIndicator(root) {
-    var nodes = root.querySelectorAll('div, span');
-    for (var i = 0; i < Math.min(nodes.length, 40); i++) {
-      var el = nodes[i];
+    // Background bubble color (sent often has solid tint)
+    var node = el;
+    for (var i = 0; i < 6 && node; i++) {
       try {
-        var st = window.getComputedStyle(el);
-        var bg = st.backgroundColor || '';
-        var w = parseFloat(st.width) || 0;
-        var h = parseFloat(st.height) || 0;
-        if (w >= 4 && w <= 14 && h >= 4 && h <= 14) {
-          if (/0,?\\s*149,?\\s*246|55,?\\s*151,?\\s*240/.test(bg)) return true;
+        var bg = window.getComputedStyle(node).backgroundColor || '';
+        var m = bg.match(/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/);
+        if (m) {
+          var r = +m[1], g = +m[2], b = +m[3];
+          // skip pure white/black/transparent-ish
+          if (r + g + b > 30 && r + g + b < 720) {
+            // Instagram sent: often gray-blue / purple-ish on dark theme
+            if (Math.abs(r - g) < 40 && Math.abs(g - b) < 40 && r > 40) {
+              // neutral gray bubble — could be either; don't decide
+            } else if (b > r && b > 100) {
+              return true;
+            }
+          }
         }
-      } catch (e) {}
+      } catch (e2) {}
+      node = node.parentElement;
     }
     return false;
   }
 
   function collectDmCandidates() {
     var out = [];
+    var seenEl = new WeakSet();
+
+    function add(el) {
+      if (!el || seenEl.has(el)) return;
+      seenEl.add(el);
+      var text = (el.innerText || el.textContent || '').trim();
+      if (!text || text.length < 1 || text.length > 2000) return;
+      if (/^(Send|ارسال|Like|Seen|Active|Message|Enter|Online|Offline)/i.test(text)) return;
+      if (/^[0-9]{1,2}:[0-9]{2}\\s*(AM|PM)?$/i.test(text)) return;
+      if (lastSentText && text === lastSentText) return;
+      // skip very short single tokens that are just names? keep them for safety
+      out.push({ el: el, text: text });
+    }
+
     var selectors = [
       'div[role="main"] div[dir="auto"]',
       'div[role="list"] div[dir="auto"]',
       'div[role="row"] div[dir="auto"]',
-      'main div[dir="auto"]'
+      'div[role="grid"] div[dir="auto"]',
+      'main div[dir="auto"]',
+      // broader
+      'div[role="main"] span[dir="auto"]',
+      'div[role="row"] span[dir="auto"]'
     ];
-    var seenEl = new WeakSet();
+
     for (var s = 0; s < selectors.length; s++) {
       var list = document.querySelectorAll(selectors[s]);
-      for (var i = 0; i < list.length; i++) {
-        var el = list[i];
-        if (seenEl.has(el)) continue;
-        seenEl.add(el);
-        var text = (el.innerText || '').trim();
-        if (!text || text.length < 1 || text.length > 1500) continue;
-        if (/^(Send|ارسال|Like|Seen|Active now|Active|Message|Enter)/i.test(text)) continue;
-        if (/^[0-9]{1,2}:[0-9]{2}/.test(text) && text.length < 14) continue;
-        if (lastSentText && text === lastSentText) continue;
-        // skip pure username-looking short labels sometimes
-        out.push({ el: el, text: text });
+      for (var i = 0; i < list.length; i++) add(list[i]);
+    }
+
+    // Last resort: any dir=auto inside main that looks like a message bubble
+    if (out.length < 2) {
+      var all = document.querySelectorAll('[dir="auto"]');
+      for (var j = 0; j < all.length; j++) {
+        var el = all[j];
+        try {
+          var r = el.getBoundingClientRect();
+          if (r.width < 20 || r.height < 10) continue;
+          if (r.top < 80) continue; // header
+          add(el);
+        } catch (e) {}
       }
     }
+
     return out;
   }
 
-  /**
-   * Core fix:
-   * Build ordered list of message-like nodes, find last OUTGOING index,
-   * queue every INCOMING message after that (unanswered tail).
-   * Older messages only markSeen.
-   */
   function scanDms() {
-    if (!isDirectPage() || !isThread()) {
-      lastScanInfo = { path: path(), dmNodes: 0, queued: 0, thread: false };
+    // Treat as thread if URL matches OR compose box is visible (open conversation)
+    var threadLike = isThread();
+    if (!isDirectPage() && !threadLike) {
+      lastScanInfo = { path: path(), dmNodes: 0, queued: 0, thread: false, method: 'skip' };
+      return;
+    }
+    if (isInbox() && !document.querySelector('div[role="textbox"][contenteditable="true"]')) {
+      lastScanInfo = { path: path(), dmNodes: 0, queued: 0, thread: false, method: 'inbox_only' };
       return;
     }
 
     var nodes = collectDmCandidates();
-    lastScanInfo = { path: path(), dmNodes: nodes.length, queued: 0, thread: true };
+    lastScanInfo = { path: path(), dmNodes: nodes.length, queued: 0, thread: true, method: 'tail' };
 
     if (!nodes.length) return;
 
-    // Determine outgoing/incoming for each
     var classified = [];
     for (var i = 0; i < nodes.length; i++) {
-      var outg = isProbablyOutgoing(nodes[i].el);
-      classified.push({ text: nodes[i].text, outgoing: outg, el: nodes[i].el });
+      classified.push({
+        text: nodes[i].text,
+        outgoing: isProbablyOutgoing(nodes[i].el),
+        el: nodes[i].el
+      });
     }
 
-    // Last outgoing index
     var lastOut = -1;
     for (var j = 0; j < classified.length; j++) {
       if (classified[j].outgoing) lastOut = j;
     }
 
-    // If we never sent in this view, only take the last 1–3 incoming (avoid flooding old history)
-    var startIdx = lastOut + 1;
-    if (lastOut < 0) {
-      // no outgoing visible — only last incoming message
+    var startIdx;
+    if (lastOut >= 0) {
+      startIdx = lastOut + 1;
+    } else {
+      // no outgoing detected — only the last bubble if not our sent text
       startIdx = Math.max(0, classified.length - 1);
+      lastScanInfo.method = 'last_only';
     }
 
-    for (var k = 0; k < classified.length; k++) {
+    // If everything after lastOut is empty but we have nodes, force last incoming-looking
+    var queuedAny = false;
+    for (var k = startIdx; k < classified.length; k++) {
       var item = classified[k];
+      if (item.outgoing) continue;
       var fp = fingerprint(item.text, 'dm');
-
-      if (k < startIdx || item.outgoing) {
-        markSeen(fp);
-        continue;
-      }
-
-      // incoming after last outgoing
       if (SEEN.has(fp)) continue;
       markSeen(fp);
-
-      // skip if looks like our last sent
-      if (lastSentText && item.text.indexOf(lastSentText.slice(0, 30)) !== -1) continue;
-
-      PENDING.push({
-        id: fp,
-        text: item.text,
-        kind: 'dm_incoming',
-        channel: 'dm'
-      });
+      if (lastSentText && item.text.indexOf(lastSentText.slice(0, 24)) !== -1) continue;
+      PENDING.push({ id: fp, text: item.text, kind: 'dm_incoming', channel: 'dm' });
       lastScanInfo.queued++;
+      queuedAny = true;
+    }
+
+    // Absolute fallback: last node not equal to lastSentText
+    if (!queuedAny && classified.length) {
+      var last = classified[classified.length - 1];
+      var fp2 = fingerprint(last.text, 'dm');
+      if (!SEEN.has(fp2) && !(lastSentText && last.text.indexOf(lastSentText.slice(0, 24)) !== -1)) {
+        markSeen(fp2);
+        if (!last.outgoing || lastOut < 0) {
+          PENDING.push({ id: fp2, text: last.text, kind: 'dm_incoming', channel: 'dm' });
+          lastScanInfo.queued++;
+          lastScanInfo.method = 'force_last';
+        }
+      }
+    }
+
+    // Mark older as seen
+    for (var m = 0; m < startIdx && m < classified.length; m++) {
+      markSeen(fingerprint(classified[m].text, 'dm'));
     }
   }
 
@@ -175,7 +212,6 @@ export const INJECTOR_SOURCE = `
   function scanComments() {
     if (!isPostPage()) return;
     var comments = collectComments().slice(-40);
-    // unanswered: take last few not yet seen
     for (var i = 0; i < comments.length; i++) {
       var c = comments[i];
       var fp = fingerprint((c.username || '') + ':' + c.text, 'cmt');
@@ -210,7 +246,8 @@ export const INJECTOR_SOURCE = `
       inbox: isInbox(),
       thread: isThread(),
       post: isPostPage(),
-      lastScan: lastScanInfo
+      lastScan: lastScanInfo,
+      hasCompose: !!document.querySelector('div[role="textbox"][contenteditable="true"], textarea')
     };
   };
 
@@ -224,43 +261,47 @@ export const INJECTOR_SOURCE = `
       var href = a.getAttribute('href') || '';
       if (!href || seenHref[href]) continue;
       seenHref[href] = true;
-
-      var row = a;
-      for (var up = 0; up < 6; up++) {
-        if (!row.parentElement) break;
-        row = row.parentElement;
-        if (row.getAttribute && (row.getAttribute('role') === 'button' || row.getAttribute('role') === 'listitem')) break;
-      }
-
-      var text = (row.innerText || a.innerText || '').replace(/\\s+/g, ' ').trim();
-      var blue = hasBlueUnreadIndicator(row);
-      var bold = false;
-      try {
-        var spans = row.querySelectorAll('span');
-        for (var s = 0; s < Math.min(spans.length, 12); s++) {
-          var fw = window.getComputedStyle(spans[s]).fontWeight || '';
-          if (parseInt(fw, 10) >= 600 || fw === 'bold') { bold = true; break; }
-        }
-      } catch (e) {}
-
-      if (blue || bold) {
-        items.push({ href: href, preview: text.slice(0, 90), index: items.length, reason: blue ? 'dot' : 'bold' });
-      }
+      var text = (a.innerText || '').replace(/\\s+/g, ' ').trim();
+      items.push({ href: href, preview: text.slice(0, 90), index: items.length, reason: 'link' });
+      if (items.length >= 10) break;
     }
 
-    // Always provide top conversations as fallback so walker can open them
+    // Also collect role=button rows that contain thread links
     if (items.length === 0) {
-      seenHref = {};
-      for (var j = 0; j < anchors.length && items.length < 8; j++) {
-        var h2 = anchors[j].getAttribute('href') || '';
-        if (!h2 || seenHref[h2]) continue;
-        seenHref[h2] = true;
-        var p2 = (anchors[j].innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 90);
-        items.push({ href: h2, preview: p2, index: items.length, reason: 'top' });
+      var rows = document.querySelectorAll('div[role="button"]');
+      for (var r = 0; r < rows.length && items.length < 10; r++) {
+        var link = rows[r].querySelector('a[href*="/direct/t/"]');
+        if (!link) continue;
+        var h = link.getAttribute('href') || '';
+        if (!h || seenHref[h]) continue;
+        seenHref[h] = true;
+        items.push({
+          href: h,
+          preview: (rows[r].innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 90),
+          index: items.length,
+          reason: 'row'
+        });
       }
     }
 
     return items;
+  };
+
+  /** Prefer click to keep SPA / session; fallback href */
+  window.__TE_IG_OPEN_THREAD__ = function (href) {
+    if (!href) return { ok: false };
+    var anchors = document.querySelectorAll('a[href*="/direct/t/"]');
+    for (var i = 0; i < anchors.length; i++) {
+      var a = anchors[i];
+      var h = a.getAttribute('href') || '';
+      if (h === href || h.indexOf(href) !== -1 || href.indexOf(h) !== -1) {
+        a.click();
+        return { ok: true, via: 'click' };
+      }
+    }
+    if (href.indexOf('http') === 0) location.href = href;
+    else location.href = 'https://www.instagram.com' + (href.charAt(0) === '/' ? href : '/' + href);
+    return { ok: true, via: 'href' };
   };
 
   window.__TE_IG_OPEN_HREF__ = function (href) {
@@ -287,7 +328,7 @@ export const INJECTOR_SOURCE = `
       var row = link.closest('div[role="button"]') || link.parentElement;
       var text = '';
       try { text = (row && row.innerText ? row.innerText : link.innerText || '').replace(/\\s+/g, ' ').trim(); } catch (e) {}
-      var interesting = /mention|mentioned|comment|replied|tagged|کامنت|منشن|پاسخ|ذکر/i.test(text);
+      var interesting = /mention|mentioned|comment|replied|tagged|کامنت|منشن|پاسخ/i.test(text);
       out.push({ href: href, text: text.slice(0, 140), isComment: true, score: interesting ? 2 : 1 });
     }
     out.sort(function (a, b) { return (b.score || 0) - (a.score || 0); });
@@ -422,15 +463,13 @@ export const INJECTOR_SOURCE = `
     return true;
   };
 
-  // Force re-scan when path changes without full reload (SPA)
   var lastPath = path();
   setInterval(function () {
     if (path() !== lastPath) {
       lastPath = path();
-      // allow DOM to settle then scan — unanswered tail logic handles history
-      setTimeout(function () { try { scan(); } catch (e) {} }, 1200);
+      setTimeout(function () { try { scan(); } catch (e) {} }, 1000);
     }
-  }, 800);
+  }, 700);
 
   try { scan(); } catch (e) {}
   if (!window.__TE_IG_OBSERVER__) {

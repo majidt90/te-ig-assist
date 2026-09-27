@@ -7,21 +7,28 @@ export interface KeywordRule {
 }
 
 export interface FeatureFlags {
+  /** Master: reply to Instagram DMs */
+  autoReplyDms: boolean
+  /** Master: reply to post comments */
+  autoReplyComments: boolean
+  /** Master: walk notifications / activity */
+  autoReplyNotifications: boolean
   replyOwnPostComments: boolean
   replyMentions: boolean
   keywordRulesEnabled: boolean
   walkUnreadDms: boolean
-  checkNotifications: boolean
   acceptFollowRequests: boolean
   followBack: boolean
 }
 
 export const DEFAULT_FLAGS: FeatureFlags = {
+  autoReplyDms: true,
+  autoReplyComments: true,
+  autoReplyNotifications: true,
   replyOwnPostComments: true,
   replyMentions: true,
   keywordRulesEnabled: true,
   walkUnreadDms: true,
-  checkNotifications: true,
   acceptFollowRequests: false,
   followBack: false
 }
