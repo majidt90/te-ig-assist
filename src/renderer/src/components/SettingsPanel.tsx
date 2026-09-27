@@ -15,7 +15,8 @@ import {
   GitBranch,
   ListFilter,
   KeyRound,
-  Timer
+  Timer,
+  BookOpen
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import type { DmListMode, KeywordRule } from '../lib/types'
@@ -101,6 +102,36 @@ function DelaySlider({
   )
 }
 
+function TabSaveBar({
+  onSave,
+  saved,
+  saving,
+  label
+}: {
+  onSave: () => void
+  saved: boolean
+  saving?: boolean
+  label: string
+}): JSX.Element {
+  return (
+    <div className="sticky top-0 z-10 -mx-4 mb-1 flex items-center justify-between gap-2 border-b border-[hsl(var(--border)/0.6)] bg-[hsl(var(--card)/0.92)] px-4 py-2.5 backdrop-blur-md">
+      <span className="text-[12px] font-semibold">{label}</span>
+      <button
+        type="button"
+        onClick={onSave}
+        disabled={saving}
+        className={cn(
+          'btn-primary flex items-center gap-1.5 !px-3 !py-1.5 !text-[11px]',
+          saved && '!bg-emerald-500'
+        )}
+      >
+        {saved ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Save className="h-3.5 w-3.5" />}
+        {saved ? 'ذخیره شد' : 'ذخیره'}
+      </button>
+    </div>
+  )
+}
+
 function LicenseSection(): JSX.Element {
   const [username, setUsername] = useState('')
   const [email, setEmail] = useState('')
@@ -150,15 +181,13 @@ function LicenseSection(): JSX.Element {
         <KeyRound className="h-3.5 w-3.5 text-violet-400" />
         لایسنس
       </h3>
-      <div className="rounded-xl border border-[hsl(var(--border)/0.7)] bg-[hsl(var(--secondary)/0.35)] p-3 space-y-2">
+      <div className="space-y-2 rounded-xl border border-[hsl(var(--border)/0.7)] bg-[hsl(var(--secondary)/0.35)] p-3">
         <div className="flex items-center justify-between gap-2">
           <span className="text-[11px] text-[hsl(var(--muted-foreground))]">وضعیت</span>
           <span
             className={cn(
               'rounded-full px-2 py-0.5 text-[10px] font-medium',
-              expired
-                ? 'bg-red-500/15 text-red-400'
-                : 'bg-emerald-500/15 text-emerald-400'
+              expired ? 'bg-red-500/15 text-red-400' : 'bg-emerald-500/15 text-emerald-400'
             )}
           >
             {expired ? 'منقضی' : 'فعال'}
@@ -192,7 +221,7 @@ function LicenseSection(): JSX.Element {
           </div>
           <div className="flex justify-between gap-2">
             <span className="text-[hsl(var(--muted-foreground))]">کلید</span>
-            <span className="max-w-[60%] truncate font-mono text-[9px]" dir="ltr" title={keyPreview}>
+            <span className="max-w-[60%] truncate font-mono text-[9px]" dir="ltr">
               {keyPreview || '—'}
             </span>
           </div>
@@ -265,9 +294,7 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
       if (map.dmListMode === 'whitelist' || map.dmListMode === 'blacklist' || map.dmListMode === 'off') {
         setDmListMode(map.dmListMode)
       }
-      if (Array.isArray(map.dmUserList)) {
-        setDmUserListText((map.dmUserList as string[]).join('\n'))
-      }
+      if (Array.isArray(map.dmUserList)) setDmUserListText((map.dmUserList as string[]).join('\n'))
       if (Array.isArray(map.keywordRules)) setRules(map.keywordRules as KeywordRule[])
     })()
   }, [])
@@ -322,160 +349,148 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
             initial={{ opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -6 }}
-            className="flex h-full flex-col gap-4 overflow-y-auto p-4"
+            className="flex h-full flex-col overflow-y-auto px-4 pb-4"
           >
-            <LicenseSection />
+            <TabSaveBar label="تنظیمات" onSave={handleSaveSettings} saved={settingsSaved} />
+            <div className="mt-3 space-y-4">
+              <LicenseSection />
 
-            <section className="space-y-3">
-              <h3 className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
-                قابلیت‌های اصلی + تأخیر
-              </h3>
-              <div className="space-y-2">
-                <ToggleSwitch
-                  checked={autoReplyDms}
-                  onChange={setAutoReplyDms}
-                  label="پاسخ‌گویی دایرکت"
-                  desc="فقط گفتگوهای unread"
-                />
-                {autoReplyDms && (
-                  <DelaySlider label="تأخیر دایرکت" valueSec={delayDmsSec} onChange={setDelayDmsSec} />
-                )}
-              </div>
-              <div className="space-y-2">
-                <ToggleSwitch
-                  checked={autoReplyComments}
-                  onChange={setAutoReplyComments}
-                  label="پاسخ‌گویی کامنت"
-                  desc="کامنت پست"
-                />
-                {autoReplyComments && (
-                  <DelaySlider
-                    label="تأخیر کامنت"
-                    valueSec={delayCommentsSec}
-                    onChange={setDelayCommentsSec}
+              <section className="space-y-3">
+                <h3 className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
+                  قابلیت‌های اصلی + تأخیر
+                </h3>
+                <div className="space-y-2">
+                  <ToggleSwitch
+                    checked={autoReplyDms}
+                    onChange={setAutoReplyDms}
+                    label="پاسخ‌گویی دایرکت"
+                    desc="خواندن و پاسخ به پیام‌های unread"
                   />
-                )}
-              </div>
-              <div className="space-y-2">
-                <ToggleSwitch
-                  checked={autoReplyNotifications}
-                  onChange={setAutoReplyNotifications}
-                  label="پاسخ‌گویی نوتیفیکیشن"
-                  desc="منشن و کامنت از فعالیت"
-                />
-                {autoReplyNotifications && (
-                  <DelaySlider
-                    label="تأخیر نوتیف"
-                    valueSec={delayNotificationsSec}
-                    onChange={setDelayNotificationsSec}
+                  {autoReplyDms && (
+                    <DelaySlider label="تأخیر دایرکت" valueSec={delayDmsSec} onChange={setDelayDmsSec} />
+                  )}
+                </div>
+                <div className="space-y-2">
+                  <ToggleSwitch
+                    checked={autoReplyComments}
+                    onChange={setAutoReplyComments}
+                    label="پاسخ‌گویی کامنت"
+                    desc="کامنت پست"
                   />
-                )}
-              </div>
-            </section>
-
-            <section className="space-y-2">
-              <h3 className="mb-1 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
-                <Inbox className="h-3.5 w-3.5 text-sky-400" />
-                دایرکت
-              </h3>
-              <ToggleSwitch
-                checked={walkUnreadDms}
-                onChange={setWalkUnreadDms}
-                label="پیمایش فقط unread"
-                desc="فقط چت‌هایی که پیام خوانده‌نشده دارند"
-              />
-
-              <div className="rounded-xl border border-[hsl(var(--border)/0.7)] bg-[hsl(var(--secondary)/0.35)] p-3">
-                <div className="mb-2 flex items-center gap-1.5 text-[11px] font-medium">
-                  <ListFilter className="h-3.5 w-3.5 text-amber-400" />
-                  فیلتر کاربران دایرکت
+                  {autoReplyComments && (
+                    <DelaySlider
+                      label="تأخیر کامنت"
+                      valueSec={delayCommentsSec}
+                      onChange={setDelayCommentsSec}
+                    />
+                  )}
                 </div>
-                <div className="mb-2 flex flex-wrap gap-1.5">
-                  {(
-                    [
-                      { id: 'off' as const, label: 'خاموش' },
-                      { id: 'whitelist' as const, label: 'وایت‌لیست' },
-                      { id: 'blacklist' as const, label: 'بلک‌لیست' }
-                    ] as const
-                  ).map((opt) => (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      onClick={() => setDmListMode(opt.id)}
-                      className={cn(
-                        'rounded-full px-2.5 py-1 text-[11px] transition',
-                        dmListMode === opt.id
-                          ? 'bg-[hsl(var(--primary)/0.25)] text-[hsl(var(--primary))] ring-1 ring-[hsl(var(--primary)/0.4)]'
-                          : 'bg-black/20 text-[hsl(var(--muted-foreground))] hover:bg-black/30'
-                      )}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
+                <div className="space-y-2">
+                  <ToggleSwitch
+                    checked={autoReplyNotifications}
+                    onChange={setAutoReplyNotifications}
+                    label="پاسخ‌گویی نوتیفیکیشن"
+                    desc="منشن و کامنت از فعالیت"
+                  />
+                  {autoReplyNotifications && (
+                    <DelaySlider
+                      label="تأخیر نوتیف"
+                      valueSec={delayNotificationsSec}
+                      onChange={setDelayNotificationsSec}
+                    />
+                  )}
                 </div>
-                {dmListMode !== 'off' && (
-                  <>
+              </section>
+
+              <section className="space-y-2">
+                <h3 className="mb-1 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
+                  <Inbox className="h-3.5 w-3.5 text-sky-400" />
+                  دایرکت
+                </h3>
+                <ToggleSwitch
+                  checked={walkUnreadDms}
+                  onChange={setWalkUnreadDms}
+                  label="پیمایش فقط unread"
+                  desc="فقط چت‌هایی که پیام خوانده‌نشده دارند"
+                />
+                <div className="rounded-xl border border-[hsl(var(--border)/0.7)] bg-[hsl(var(--secondary)/0.35)] p-3">
+                  <div className="mb-2 flex items-center gap-1.5 text-[11px] font-medium">
+                    <ListFilter className="h-3.5 w-3.5 text-amber-400" />
+                    فیلتر کاربران دایرکت
+                  </div>
+                  <div className="mb-2 flex flex-wrap gap-1.5">
+                    {(
+                      [
+                        { id: 'off' as const, label: 'خاموش' },
+                        { id: 'whitelist' as const, label: 'وایت‌لیست' },
+                        { id: 'blacklist' as const, label: 'بلک‌لیست' }
+                      ] as const
+                    ).map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => setDmListMode(opt.id)}
+                        className={cn(
+                          'rounded-full px-2.5 py-1 text-[11px] transition',
+                          dmListMode === opt.id
+                            ? 'bg-[hsl(var(--primary)/0.25)] text-[hsl(var(--primary))] ring-1 ring-[hsl(var(--primary)/0.4)]'
+                            : 'bg-black/20 text-[hsl(var(--muted-foreground))] hover:bg-black/30'
+                        )}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                  {dmListMode !== 'off' && (
                     <textarea
                       value={dmUserListText}
                       onChange={(e) => setDmUserListText(e.target.value)}
                       className="input-field min-h-[88px] resize-none font-mono text-[12px]"
                       dir="ltr"
-                      placeholder={'user1\nuser2\n@user3'}
+                      placeholder={'user1\nuser2'}
                     />
-                    <p className="mt-1.5 text-[10px] leading-relaxed text-[hsl(var(--muted-foreground))]">
-                      {dmListMode === 'whitelist'
-                        ? 'فقط به همین یوزرنیم‌ها پاسخ داده می‌شود.'
-                        : 'به این یوزرنیم‌ها پاسخ داده نمی‌شود.'}
-                    </p>
-                  </>
-                )}
-              </div>
-            </section>
+                  )}
+                </div>
+              </section>
 
-            <section className="space-y-2">
-              <h3 className="mb-1 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
-                <MessageSquare className="h-3.5 w-3.5 text-pink-400" />
-                کامنت
-              </h3>
-              <ToggleSwitch
-                checked={replyOwnPostComments}
-                onChange={setReplyOwnPostComments}
-                label="کامنت پست‌های خودم"
-                desc="روی صفحه پست"
-              />
-              <ToggleSwitch
-                checked={replyMentions}
-                onChange={setReplyMentions}
-                label="منشن"
-                desc="اگر منشن شدید"
-              />
-            </section>
+              <section className="space-y-2">
+                <h3 className="mb-1 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
+                  <MessageSquare className="h-3.5 w-3.5 text-pink-400" />
+                  کامنت
+                </h3>
+                <ToggleSwitch
+                  checked={replyOwnPostComments}
+                  onChange={setReplyOwnPostComments}
+                  label="کامنت پست‌های خودم"
+                  desc="روی صفحه پست"
+                />
+                <ToggleSwitch
+                  checked={replyMentions}
+                  onChange={setReplyMentions}
+                  label="منشن"
+                  desc="اگر منشن شدید"
+                />
+              </section>
 
-            <section className="space-y-2">
-              <h3 className="mb-1 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
-                <UserPlus className="h-3.5 w-3.5 text-emerald-400" />
-                فالوئر
-              </h3>
-              <ToggleSwitch
-                checked={acceptFollowRequests}
-                onChange={setAcceptFollowRequests}
-                label="تأیید درخواست فالو"
-                desc="Confirm"
-              />
-              <ToggleSwitch
-                checked={followBack}
-                onChange={setFollowBack}
-                label="فالو بک"
-                desc="بعد از تأیید"
-              />
-            </section>
-
-            <button
-              onClick={handleSaveSettings}
-              className={cn('btn-primary !w-full !py-2 !text-[11px]', settingsSaved && '!bg-emerald-500')}
-            >
-              {settingsSaved ? 'ذخیره شد' : 'ذخیره تنظیمات'}
-            </button>
+              <section className="space-y-2">
+                <h3 className="mb-1 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
+                  <UserPlus className="h-3.5 w-3.5 text-emerald-400" />
+                  فالوئر
+                </h3>
+                <ToggleSwitch
+                  checked={acceptFollowRequests}
+                  onChange={setAcceptFollowRequests}
+                  label="تأیید درخواست فالو"
+                  desc="Confirm"
+                />
+                <ToggleSwitch
+                  checked={followBack}
+                  onChange={setFollowBack}
+                  label="فالو بک"
+                  desc="بعد از تأیید"
+                />
+              </section>
+            </div>
           </motion.div>
         )}
 
@@ -485,43 +500,95 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
             initial={{ opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -6 }}
-            className="flex h-full flex-col gap-3 overflow-y-auto p-4"
+            className="flex h-full flex-col overflow-y-auto px-4 pb-4"
           >
-            <div className="flex items-center justify-between">
-              <h3 className="flex items-center gap-2 text-[13px] font-semibold">
-                <Brain className="h-4 w-4 text-violet-400" />
-                حافظه و منطق
-              </h3>
-              <button
-                onClick={handleSaveMemory}
-                disabled={isSaving}
-                className={cn('btn-primary !px-3 !py-1.5 !text-[11px]', saved && '!bg-emerald-500')}
-              >
-                {saved ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Save className="h-3.5 w-3.5" />}
-                {saved ? 'ذخیره شد' : 'ذخیره'}
-              </button>
-            </div>
-            <textarea
-              value={memory}
-              onChange={(e) => {
-                if (e.target.value.length <= MAX_MEMORY_CHARS) setMemory(e.target.value)
-              }}
-              className="input-field min-h-[120px] resize-none leading-[1.7]"
-              dir="rtl"
-              placeholder="حافظه…"
+            <TabSaveBar
+              label="حافظه و منطق"
+              onSave={handleSaveMemory}
+              saved={saved}
+              saving={isSaving}
             />
-            <textarea
-              value={logic}
-              onChange={(e) => {
-                if (e.target.value.length <= MAX_LOGIC_CHARS) setLogic(e.target.value)
-              }}
-              className="input-field min-h-[140px] resize-none leading-[1.7]"
-              dir="rtl"
-              placeholder="منطق…"
-            />
-            <div className="flex gap-2 rounded-xl border border-emerald-500/15 bg-emerald-500/[0.06] px-3 py-2.5">
-              <Lightbulb className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400" />
-              <p className="text-[11px] text-emerald-100/80">اگر [شرط] آنگاه [عمل]</p>
+
+            <div className="mt-3 space-y-4">
+              {/* حافظه */}
+              <section>
+                <h3 className="mb-1.5 flex items-center gap-1.5 text-[12px] font-semibold">
+                  <Brain className="h-3.5 w-3.5 text-violet-400" />
+                  حافظه
+                </h3>
+                <p className="mb-2 text-[10px] leading-relaxed text-[hsl(var(--muted-foreground))]">
+                  واقعیت‌های ثابت درباره شما یا کسب‌وکار (اسم، قیمت، آدرس، ساعات کاری…).
+                </p>
+                <textarea
+                  value={memory}
+                  onChange={(e) => {
+                    if (e.target.value.length <= MAX_MEMORY_CHARS) setMemory(e.target.value)
+                  }}
+                  className="input-field min-h-[130px] resize-none leading-[1.7]"
+                  dir="rtl"
+                  placeholder={'من مجیدم\nفروشگاه لباس دارم\nقیمت از ۲۰۰ هزار...'}
+                />
+                <p className="mt-1 text-left text-[10px] text-[hsl(var(--muted-foreground))]">
+                  {memory.length.toLocaleString('fa-IR')} / {MAX_MEMORY_CHARS.toLocaleString('fa-IR')}
+                </p>
+              </section>
+
+              {/* منطق */}
+              <section>
+                <h3 className="mb-1.5 flex items-center gap-1.5 text-[12px] font-semibold">
+                  <GitBranch className="h-3.5 w-3.5 text-emerald-400" />
+                  منطق
+                </h3>
+                <p className="mb-2 text-[10px] leading-relaxed text-[hsl(var(--muted-foreground))]">
+                  قوانین رفتاری: اگر شرط برقرار بود، چه واکنشی انجام شود.
+                </p>
+                <textarea
+                  value={logic}
+                  onChange={(e) => {
+                    if (e.target.value.length <= MAX_LOGIC_CHARS) setLogic(e.target.value)
+                  }}
+                  className="input-field min-h-[140px] resize-none leading-[1.7]"
+                  dir="rtl"
+                  placeholder={
+                    'اگر حال پرسید آنگاه تشکر کن و احوال بپرس\nاگر پست فرستاد آنگاه لایک کن\nاگر قیمت پرسید آنگاه از حافظه جواب بده'
+                  }
+                />
+                <p className="mt-1 text-left text-[10px] text-[hsl(var(--muted-foreground))]">
+                  {logic.length.toLocaleString('fa-IR')} / {MAX_LOGIC_CHARS.toLocaleString('fa-IR')}
+                </p>
+              </section>
+
+              {/* راهنما */}
+              <div className="space-y-2 rounded-xl border border-[hsl(var(--border)/0.7)] bg-[hsl(var(--secondary)/0.3)] p-3">
+                <div className="flex items-center gap-1.5 text-[11px] font-semibold">
+                  <BookOpen className="h-3.5 w-3.5 text-sky-400" />
+                  راهنمای استفاده
+                </div>
+                <div className="space-y-2 text-[11px] leading-relaxed text-[hsl(var(--muted-foreground))]">
+                  <p>
+                    <span className="font-medium text-[hsl(var(--foreground))]">حافظه:</span> هر خط
+                    یک واقعیت. وقتی پیام مرتبط باشد، از همین خطوط در پاسخ استفاده می‌شود.
+                  </p>
+                  <p>
+                    <span className="font-medium text-[hsl(var(--foreground))]">منطق:</span> هر خط یک
+                    قانون. فرمت پیشنهادی:
+                  </p>
+                  <code className="block rounded-lg bg-black/30 px-2 py-1.5 text-[10px] text-emerald-200/90" dir="rtl">
+                    اگر [شرط] آنگاه [عمل]
+                  </code>
+                  <ul className="list-inside list-disc space-y-1 pr-1">
+                    <li>اگر حال پرسید آنگاه تشکر کن و احوال بپرس</li>
+                    <li>اگر پست فرستاد آنگاه لایک کن</li>
+                    <li>اگر قیمت پرسید آنگاه از حافظه جواب بده</li>
+                    <li>اگر سلام کرد آنگاه سلام</li>
+                  </ul>
+                  <p className="flex gap-1.5 text-emerald-100/80">
+                    <Lightbulb className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400" />
+                    منطق تصمیم می‌گیرد «چه واکنشی»؛ حافظه «محتوای واقعی» را می‌دهد. هر دو با هم در
+                    پاسخ دایرکت استفاده می‌شوند.
+                  </p>
+                </div>
+              </div>
             </div>
           </motion.div>
         )}
@@ -532,77 +599,79 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
             initial={{ opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -6 }}
-            className="flex h-full flex-col gap-3 overflow-y-auto p-4"
+            className="flex h-full flex-col overflow-y-auto px-4 pb-4"
           >
-            <div className="flex items-center justify-between">
-              <h3 className="flex items-center gap-2 text-[13px] font-semibold">
-                <Zap className="h-4 w-4 text-amber-400" />
-                کلیدواژه کامنت
-              </h3>
-              <button
-                onClick={handleSaveRules}
-                className={cn('btn-primary !px-3 !py-1.5 !text-[11px]', rulesSaved && '!bg-emerald-500')}
-              >
-                {rulesSaved ? 'ذخیره شد' : 'ذخیره'}
-              </button>
-            </div>
-            <ToggleSwitch
-              checked={keywordRulesEnabled}
-              onChange={setKeywordRulesEnabled}
-              label="فعال‌سازی قوانین کلیدواژه"
-              desc="کلمه در کامنت → پاسخ + دایرکت"
-            />
-            {rules.map((rule, idx) => (
-              <div key={rule.id} className="card space-y-2">
-                <div className="flex justify-between">
-                  <span className="text-[11px] text-[hsl(var(--muted-foreground))]">قانون {idx + 1}</span>
-                  <button type="button" onClick={() => setRules((r) => r.filter((x) => x.id !== rule.id))}>
-                    <Trash2 className="h-3.5 w-3.5 text-red-400" />
-                  </button>
+            <TabSaveBar label="قوانین کلیدواژه" onSave={handleSaveRules} saved={rulesSaved} />
+
+            <div className="mt-3 space-y-3">
+              <ToggleSwitch
+                checked={keywordRulesEnabled}
+                onChange={setKeywordRulesEnabled}
+                label="فعال‌سازی قوانین کلیدواژه"
+                desc="کلمه در کامنت → پاسخ + دایرکت اختیاری"
+              />
+              {rules.map((rule, idx) => (
+                <div key={rule.id} className="card space-y-2">
+                  <div className="flex justify-between">
+                    <span className="text-[11px] text-[hsl(var(--muted-foreground))]">
+                      قانون {idx + 1}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setRules((r) => r.filter((x) => x.id !== rule.id))}
+                    >
+                      <Trash2 className="h-3.5 w-3.5 text-red-400" />
+                    </button>
+                  </div>
+                  <input
+                    className="input-field !py-1.5 text-[12px]"
+                    placeholder="کلمه کلیدی"
+                    value={rule.keyword}
+                    onChange={(e) =>
+                      setRules((all) =>
+                        all.map((x) => (x.id === rule.id ? { ...x, keyword: e.target.value } : x))
+                      )
+                    }
+                  />
+                  <textarea
+                    className="input-field min-h-[52px] resize-none text-[12px]"
+                    placeholder="پاسخ کامنت"
+                    value={rule.commentReply}
+                    onChange={(e) =>
+                      setRules((all) =>
+                        all.map((x) =>
+                          x.id === rule.id ? { ...x, commentReply: e.target.value } : x
+                        )
+                      )
+                    }
+                  />
+                  <textarea
+                    className="input-field min-h-[52px] resize-none text-[12px]"
+                    placeholder="دایرکت (اختیاری)"
+                    value={rule.dmMessage}
+                    onChange={(e) =>
+                      setRules((all) =>
+                        all.map((x) => (x.id === rule.id ? { ...x, dmMessage: e.target.value } : x))
+                      )
+                    }
+                  />
                 </div>
-                <input
-                  className="input-field !py-1.5 text-[12px]"
-                  placeholder="کلمه کلیدی"
-                  value={rule.keyword}
-                  onChange={(e) =>
-                    setRules((all) =>
-                      all.map((x) => (x.id === rule.id ? { ...x, keyword: e.target.value } : x))
-                    )
-                  }
-                />
-                <textarea
-                  className="input-field min-h-[52px] resize-none text-[12px]"
-                  placeholder="پاسخ کامنت"
-                  value={rule.commentReply}
-                  onChange={(e) =>
-                    setRules((all) =>
-                      all.map((x) => (x.id === rule.id ? { ...x, commentReply: e.target.value } : x))
-                    )
-                  }
-                />
-                <textarea
-                  className="input-field min-h-[52px] resize-none text-[12px]"
-                  placeholder="دایرکت (اختیاری)"
-                  value={rule.dmMessage}
-                  onChange={(e) =>
-                    setRules((all) =>
-                      all.map((x) => (x.id === rule.id ? { ...x, dmMessage: e.target.value } : x))
-                    )
-                  }
-                />
+              ))}
+              <button
+                type="button"
+                onClick={() => setRules((r) => [...r, newRule()])}
+                className="btn-ghost flex w-full items-center justify-center gap-2 border border-dashed border-[hsl(var(--border))] py-2 text-[12px]"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                افزودن قانون
+              </button>
+              <div className="flex gap-2 rounded-xl border border-amber-500/15 bg-amber-500/[0.06] px-3 py-2.5">
+                <AtSign className="h-3.5 w-3.5 shrink-0 text-amber-400" />
+                <p className="text-[11px] text-amber-100/70">
+                  اگر کلمه کلیدی در متن کامنت باشد، پاسخ کامنت ارسال می‌شود و در صورت پر بودن فیلد
+                  دایرکت، پیام خصوصی هم فرستاده می‌شود.
+                </p>
               </div>
-            ))}
-            <button
-              type="button"
-              onClick={() => setRules((r) => [...r, newRule()])}
-              className="btn-ghost flex w-full items-center justify-center gap-2 border border-dashed border-[hsl(var(--border))] py-2 text-[12px]"
-            >
-              <Plus className="h-3.5 w-3.5" />
-              افزودن
-            </button>
-            <div className="flex gap-2 rounded-xl border border-amber-500/15 bg-amber-500/[0.06] px-3 py-2.5">
-              <AtSign className="h-3.5 w-3.5 shrink-0 text-amber-400" />
-              <p className="text-[11px] text-amber-100/70">فیلتر یوزر دایرکت در تب تنظیمات است.</p>
             </div>
           </motion.div>
         )}
