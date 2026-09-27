@@ -10,10 +10,18 @@ export interface FeatureFlags {
   replyOwnPostComments: boolean
   replyMentions: boolean
   keywordRulesEnabled: boolean
+  walkUnreadDms: boolean
+  checkNotifications: boolean
+  acceptFollowRequests: boolean
+  followBack: boolean
 }
 
 export const DEFAULT_FLAGS: FeatureFlags = {
   replyOwnPostComments: true,
   replyMentions: true,
-  keywordRulesEnabled: true
+  keywordRulesEnabled: true,
+  walkUnreadDms: true,
+  checkNotifications: true,
+  acceptFollowRequests: false,
+  followBack: false
 }

@@ -20,6 +20,8 @@ interface PendingItem extends IncomingMessage {
 
 type WebviewLike = Electron.WebviewTag
 
+type CyclePhase = 'idle' | 'unread_dms' | 'notifications' | 'follows' | 'listening'
+
 export class AutoReplyController {
   private enabled = false
   private memory = ''
@@ -27,6 +29,7 @@ export class AutoReplyController {
   private processing = false
   private queue: PendingItem[] = []
   private repliedIds = new Set<string>()
+  private inFlightIds = new Set<string>()
   private activities: ActivityItem[] = []
   private listeners = new Set<(items: ActivityItem[]) => void>()
   private pollTimer: ReturnType<typeof setInterval> | null = null
@@ -35,13 +38,23 @@ export class AutoReplyController {
   private readyLogged = false
   private flags: FeatureFlags = { ...DEFAULT_FLAGS }
   private keywordRules: KeywordRule[] = []
-  /** DM text waiting to send after profile navigation */
   private pendingDmAfterNav: { username: string; text: string } | null = null
+
+  /** Orchestrator */
+  private phase: CyclePhase = 'idle'
+  private cycleRunning = false
+  private lastCycleAt = 0
+  private unreadQueue: Array<{ href: string; preview: string }> = []
+  private activityQueue: Array<{ href: string; text: string }> = []
 
   setEnabled(v: boolean): void {
     if (this.enabled === v) return
     this.enabled = v
     this.pushActivity('info', v ? 'پاسخ‌گویی خودکار روشن شد' : 'پاسخ‌گویی خودکار خاموش شد')
+    if (v) {
+      this.phase = 'idle'
+      this.lastCycleAt = 0
+    }
   }
 
   setMemory(m: string): void {
@@ -79,7 +92,7 @@ export class AutoReplyController {
       message,
       at: Date.now()
     }
-    this.activities = [item, ...this.activities].slice(0, 60)
+    this.activities = [item, ...this.activities].slice(0, 80)
     this.listeners.forEach((fn) => fn(this.getActivities()))
   }
 
@@ -87,7 +100,7 @@ export class AutoReplyController {
     this.webview = webview
     this.injectorSource = injectorSource
     if (this.pollTimer) clearInterval(this.pollTimer)
-    this.pollTimer = setInterval(() => void this.tick(), 1500)
+    this.pollTimer = setInterval(() => void this.tick(), 1800)
   }
 
   unbindWebview(): void {
@@ -97,56 +110,57 @@ export class AutoReplyController {
     this.readyLogged = false
   }
 
+  private async exec<T>(code: string): Promise<T | null> {
+    const wv = this.webview
+    if (!wv) return null
+    try {
+      return (await wv.executeJavaScript(code)) as T
+    } catch {
+      return null
+    }
+  }
+
   private async tick(): Promise<void> {
     const wv = this.webview
     if (!wv) return
 
     try {
-      const hasInjector = await wv.executeJavaScript(
-        '!!(window.__TE_IG_POLL__ && window.__TE_IG_SEND_REPLY__)'
-      )
-      if (!hasInjector && this.injectorSource) {
+      const has = await this.exec<boolean>('!!(window.__TE_IG_POLL__ && window.__TE_IG_SEND_REPLY__)')
+      if (!has && this.injectorSource) {
         await wv.executeJavaScript(this.injectorSource)
         this.readyLogged = false
       }
 
-      const status = (await wv.executeJavaScript(
-        'window.__TE_IG_STATUS__ ? window.__TE_IG_STATUS__() : null'
-      )) as {
+      const status = await this.exec<{
         path?: string
         ready?: boolean
-        direct?: boolean
+        inbox?: boolean
+        thread?: boolean
         post?: boolean
-      } | null
+      }>('window.__TE_IG_STATUS__ ? window.__TE_IG_STATUS__() : null')
 
       if (status?.ready && !this.readyLogged) {
         this.readyLogged = true
         this.pushActivity('info', `مانیتور آماده — ${status.path || '?'}`)
       }
 
-      // After navigating to profile for keyword DM
-      if (this.pendingDmAfterNav && status?.path) {
-        const u = this.pendingDmAfterNav.username
-        if (status.path.includes(`/${u}`)) {
-          await this.tryClickMessageAndSend(this.pendingDmAfterNav.text)
-          this.pendingDmAfterNav = null
-        }
+      if (this.pendingDmAfterNav && status?.path?.includes(`/${this.pendingDmAfterNav.username}`)) {
+        await this.tryClickMessageAndSend(this.pendingDmAfterNav.text)
+        this.pendingDmAfterNav = null
       }
 
-      const batch = (await wv.executeJavaScript(
-        'window.__TE_IG_POLL__ ? window.__TE_IG_POLL__() : []'
-      )) as Array<{
-        id: string
-        text: string
-        kind: string
-        username?: string
-        isMention?: boolean
-        path?: string
-      }>
+      // Pull new events from open thread / post
+      const batch = (await this.exec<
+        Array<{
+          id: string
+          text: string
+          kind: string
+          username?: string
+          isMention?: boolean
+          path?: string
+        }>
+      >('window.__TE_IG_POLL__ ? window.__TE_IG_POLL__() : []')) || []
 
-      if (!Array.isArray(batch) || !batch.length) return
-
-      // Process in order (oldest first as scanned)
       for (const item of batch) {
         if (item.kind === 'dm_incoming') {
           this.enqueue({
@@ -168,26 +182,141 @@ export class AutoReplyController {
         }
       }
 
-      void this.processQueue()
+      await this.processQueue()
+
+      // Background orchestration when enabled and queue empty
+      if (this.enabled && !this.processing && this.queue.length === 0) {
+        await this.runCycleStep(status)
+      }
     } catch {
-      // navigation
+      // ignore
+    }
+  }
+
+  private async runCycleStep(status: { path?: string; inbox?: boolean; thread?: boolean } | null): Promise<void> {
+    if (this.cycleRunning) return
+    // Full cycle at most every 45s when idle on inbox
+    const now = Date.now()
+
+    this.cycleRunning = true
+    try {
+      if (this.phase === 'idle' || this.phase === 'listening') {
+        if (now - this.lastCycleAt < 45000 && this.phase === 'listening') return
+        this.lastCycleAt = now
+
+        if (this.flags.walkUnreadDms) {
+          this.phase = 'unread_dms'
+          this.pushActivity('info', 'بررسی دایرکت‌های خوانده‌نشده…')
+          await this.exec('window.__TE_IG_GOTO__ && window.__TE_IG_GOTO__("/direct/inbox/")')
+          await sleep(2500)
+          const unread =
+            (await this.exec<Array<{ href: string; preview: string }>>(
+              'window.__TE_IG_LIST_UNREAD__ ? window.__TE_IG_LIST_UNREAD__() : []'
+            )) || []
+          this.unreadQueue = unread
+          if (unread.length) {
+            this.pushActivity('info', `${unread.length} گفتگوی خوانده‌نشده پیدا شد`)
+          } else {
+            this.pushActivity('info', 'دایرکت خوانده‌نشده‌ای نیست')
+            this.phase = this.flags.checkNotifications ? 'notifications' : this.flags.acceptFollowRequests ? 'follows' : 'listening'
+          }
+        } else if (this.flags.checkNotifications) {
+          this.phase = 'notifications'
+        } else if (this.flags.acceptFollowRequests) {
+          this.phase = 'follows'
+        } else {
+          this.phase = 'listening'
+        }
+      }
+
+      if (this.phase === 'unread_dms' && this.unreadQueue.length > 0) {
+        const next = this.unreadQueue.shift()!
+        this.pushActivity('info', `باز کردن گفتگو: ${next.preview.slice(0, 40)}…`)
+        await this.exec(`window.__TE_IG_OPEN_HREF__ && window.__TE_IG_OPEN_HREF__(${JSON.stringify(next.href)})`)
+        await sleep(2800)
+        // messages will be polled into queue; processQueue handles replies
+        // after short wait, if no queue items, continue
+        await sleep(2000)
+        if (this.queue.length === 0 && this.unreadQueue.length === 0) {
+          this.phase = this.flags.checkNotifications ? 'notifications' : 'listening'
+        }
+        return
+      }
+
+      if (this.phase === 'unread_dms' && this.unreadQueue.length === 0) {
+        this.phase = this.flags.checkNotifications ? 'notifications' : this.flags.acceptFollowRequests ? 'follows' : 'listening'
+      }
+
+      if (this.phase === 'notifications') {
+        this.pushActivity('info', 'بررسی نوتیفیکیشن / فعالیت…')
+        // Instagram activity is often under heart icon — try common paths
+        await this.exec('window.__TE_IG_GOTO__ && window.__TE_IG_GOTO__("/accounts/activity/")')
+        await sleep(2500)
+        // fallback: some locales use notifications
+        let acts =
+          (await this.exec<Array<{ href: string; text: string; isComment?: boolean }>>(
+            'window.__TE_IG_LIST_ACTIVITY__ ? window.__TE_IG_LIST_ACTIVITY__() : []'
+          )) || []
+        if (!acts.length) {
+          await this.exec('window.__TE_IG_GOTO__ && window.__TE_IG_GOTO__("/notifications/")')
+          await sleep(2000)
+          acts =
+            (await this.exec<Array<{ href: string; text: string; isComment?: boolean }>>(
+              'window.__TE_IG_LIST_ACTIVITY__ ? window.__TE_IG_LIST_ACTIVITY__() : []'
+            )) || []
+        }
+        this.activityQueue = acts.filter((a) => a.isComment !== false).slice(0, 8)
+        if (this.activityQueue.length) {
+          this.pushActivity('info', `${this.activityQueue.length} مورد فعالیت مرتبط پیدا شد`)
+          const a = this.activityQueue.shift()!
+          await this.exec(`window.__TE_IG_OPEN_HREF__ && window.__TE_IG_OPEN_HREF__(${JSON.stringify(a.href)})`)
+          await sleep(2500)
+        } else {
+          this.pushActivity('info', 'نوتیفیکیشن کامنت/منشن جدیدی دیده نشد')
+        }
+        this.phase = this.flags.acceptFollowRequests ? 'follows' : 'listening'
+        return
+      }
+
+      if (this.phase === 'follows') {
+        this.pushActivity('info', 'بررسی درخواست‌های فالو…')
+        await this.exec('window.__TE_IG_GOTO__ && window.__TE_IG_GOTO__("/accounts/activity/")')
+        await sleep(1500)
+        // Also try follow requests URL patterns
+        await this.exec('window.__TE_IG_GOTO__ && window.__TE_IG_GOTO__("/accounts/login/")').catch?.(() => {})
+        // Best effort: stay on activity and click Confirm
+        const res = await this.exec<{ accepted?: number }>(
+          `window.__TE_IG_ACCEPT_FOLLOWS__ ? window.__TE_IG_ACCEPT_FOLLOWS__(${this.flags.followBack ? 'true' : 'false'}) : ({accepted:0})`
+        )
+        const n = res?.accepted || 0
+        if (n > 0) this.pushActivity('success', `${n} درخواست فالو تأیید شد`)
+        else this.pushActivity('info', 'درخواست فالو معلقی پیدا نشد')
+        this.phase = 'listening'
+        // return to inbox
+        await this.exec('window.__TE_IG_GOTO__ && window.__TE_IG_GOTO__("/direct/inbox/")')
+      }
+    } finally {
+      this.cycleRunning = false
     }
   }
 
   private enqueue(item: PendingItem): void {
     if (this.repliedIds.has(item.id)) return
+    if (this.inFlightIds.has(item.id)) return
     if (this.queue.some((q) => q.id === item.id)) return
+    // Extra dedupe by normalized text for DMs
+    if (item.channel === 'dm') {
+      const norm = item.text.replace(/\s+/g, ' ').trim()
+      if (this.queue.some((q) => q.channel === 'dm' && q.text.replace(/\s+/g, ' ').trim() === norm)) return
+      if ([...this.repliedIds].some((id) => id.startsWith(norm.slice(0, 40)))) return
+    }
 
     this.queue.push(item)
-    const preview = item.text.slice(0, 55) + (item.text.length > 55 ? '…' : '')
-    if (item.channel === 'dm') {
-      this.pushActivity('info', `پیام جدید (دایرکت): ${preview}`)
-    } else {
-      this.pushActivity(
-        'info',
-        `کامنت جدید${item.username ? ' از @' + item.username : ''}: ${preview}`
-      )
-    }
+    const preview = item.text.slice(0, 50) + (item.text.length > 50 ? '…' : '')
+    this.pushActivity(
+      'info',
+      item.channel === 'dm' ? `پیام جدید: ${preview}` : `کامنت جدید: ${preview}`
+    )
   }
 
   private matchKeywordRule(text: string): KeywordRule | null {
@@ -201,26 +330,20 @@ export class AutoReplyController {
   }
 
   private async processQueue(): Promise<void> {
-    if (this.processing || !this.webview) return
-    if (!this.enabled) {
-      // keep queue but don't reply
-      return
-    }
+    if (this.processing || !this.webview || !this.enabled) return
     this.processing = true
-
     try {
-      // Strict sequential order
       while (this.queue.length > 0 && this.enabled) {
         const msg = this.queue.shift()!
-        if (this.repliedIds.has(msg.id)) continue
+        if (this.repliedIds.has(msg.id) || this.inFlightIds.has(msg.id)) continue
 
-        if (msg.channel === 'dm') {
-          await this.handleDm(msg)
-        } else {
-          await this.handleComment(msg)
-        }
+        this.inFlightIds.add(msg.id)
 
-        await sleep(900)
+        if (msg.channel === 'dm') await this.handleDm(msg)
+        else await this.handleComment(msg)
+
+        this.inFlightIds.delete(msg.id)
+        await sleep(1200)
       }
     } finally {
       this.processing = false
@@ -228,29 +351,31 @@ export class AutoReplyController {
   }
 
   private async handleDm(msg: PendingItem): Promise<void> {
+    // Mark early to prevent parallel double-send
+    this.repliedIds.add(msg.id)
+
     const reply = generateReply(msg.text, this.memory)
-    this.pushActivity('info', `پاسخ دایرکت: ${reply.slice(0, 50)}${reply.length > 50 ? '…' : ''}`)
+    this.pushActivity('info', `پاسخ: ${reply.slice(0, 48)}${reply.length > 48 ? '…' : ''}`)
 
     await sleep(this.replyDelayMs)
     if (!this.enabled) return
 
     const result = await this.sendDm(reply)
     if (result.ok) {
-      this.repliedIds.add(msg.id)
-      this.pushActivity('success', 'پاسخ دایرکت ارسال شد')
+      this.pushActivity('success', result.reason === 'cooldown_ok' || result.reason === 'already_sent' ? 'پاسخ ارسال شد (تکراری جلوگیری شد)' : 'پاسخ ارسال شد')
     } else {
-      this.pushActivity('error', `ارسال دایرکت ناموفق: ${result.reason}`)
-      // put back once if compose missing
+      // allow one retry later only for no_compose
       if (result.reason === 'no_compose') {
-        this.pushActivity('warn', 'گفتگو را باز نگه دارید')
+        this.repliedIds.delete(msg.id)
+        this.pushActivity('warn', 'باکس پیام پیدا نشد — گفتگو را باز کنید')
+      } else {
+        this.pushActivity('error', `ارسال ناموفق: ${result.reason}`)
       }
     }
   }
 
   private async handleComment(msg: PendingItem): Promise<void> {
     const rule = this.matchKeywordRule(msg.text)
-
-    // Feature gates
     if (!rule) {
       if (msg.isMention && !this.flags.replyMentions) {
         this.repliedIds.add(msg.id)
@@ -262,86 +387,50 @@ export class AutoReplyController {
       }
     }
 
-    let commentText: string
-    if (rule?.commentReply?.trim()) {
-      commentText = rule.commentReply.trim()
-    } else {
-      commentText = generateCommentReply(msg.text, this.memory)
-    }
-
-    this.pushActivity('info', `پاسخ کامنت: ${commentText.slice(0, 50)}…`)
+    this.repliedIds.add(msg.id)
+    const commentText = rule?.commentReply?.trim() || generateCommentReply(msg.text, this.memory)
+    this.pushActivity('info', `پاسخ کامنت: ${commentText.slice(0, 40)}…`)
     await sleep(this.replyDelayMs)
     if (!this.enabled) return
 
     const result = await this.sendComment(commentText, msg.text)
-    if (result.ok) {
-      this.repliedIds.add(msg.id)
-      this.pushActivity('success', 'پاسخ کامنت ارسال شد')
-    } else {
-      this.pushActivity('error', `کامنت ناموفق: ${result.reason}`)
-      return
-    }
+    if (result.ok) this.pushActivity('success', 'پاسخ کامنت ارسال شد')
+    else this.pushActivity('error', `کامنت ناموفق: ${result.reason}`)
 
-    // Keyword → also DM
     if (rule?.dmMessage?.trim() && msg.username) {
-      this.pushActivity('info', `ارسال دایرکت کلیدواژه‌ای به @${msg.username}`)
       this.pendingDmAfterNav = { username: msg.username, text: rule.dmMessage.trim() }
-      await this.webview?.executeJavaScript(
-        `window.__TE_IG_OPEN_DM__ && window.__TE_IG_OPEN_DM__(${JSON.stringify(msg.username)})`
-      )
+      await this.exec(`window.__TE_IG_OPEN_DM__ && window.__TE_IG_OPEN_DM__(${JSON.stringify(msg.username)})`)
     }
   }
 
   private async sendDm(text: string): Promise<{ ok: boolean; reason?: string }> {
-    const wv = this.webview
-    if (!wv) return { ok: false, reason: 'no_webview' }
-    try {
-      return (await wv.executeJavaScript(
-        `window.__TE_IG_SEND_REPLY__ ? window.__TE_IG_SEND_REPLY__(${JSON.stringify(text)}) : ({ ok:false, reason:'injector_missing' })`
-      )) as { ok: boolean; reason?: string }
-    } catch (e) {
-      return { ok: false, reason: e instanceof Error ? e.message : 'exec_failed' }
-    }
+    const r = await this.exec<{ ok: boolean; reason?: string }>(
+      `window.__TE_IG_SEND_REPLY__ ? window.__TE_IG_SEND_REPLY__(${JSON.stringify(text)}) : ({ ok:false, reason:'injector_missing' })`
+    )
+    return r || { ok: false, reason: 'no_webview' }
   }
 
-  private async sendComment(
-    text: string,
-    targetText: string
-  ): Promise<{ ok: boolean; reason?: string }> {
-    const wv = this.webview
-    if (!wv) return { ok: false, reason: 'no_webview' }
-    try {
-      return (await wv.executeJavaScript(
-        `window.__TE_IG_REPLY_COMMENT__ ? window.__TE_IG_REPLY_COMMENT__(${JSON.stringify({ text, targetText })}) : ({ ok:false, reason:'injector_missing' })`
-      )) as { ok: boolean; reason?: string }
-    } catch (e) {
-      return { ok: false, reason: e instanceof Error ? e.message : 'exec_failed' }
-    }
+  private async sendComment(text: string, targetText: string): Promise<{ ok: boolean; reason?: string }> {
+    const r = await this.exec<{ ok: boolean; reason?: string }>(
+      `window.__TE_IG_REPLY_COMMENT__ ? window.__TE_IG_REPLY_COMMENT__(${JSON.stringify({ text, targetText })}) : ({ ok:false, reason:'injector_missing' })`
+    )
+    return r || { ok: false, reason: 'no_webview' }
   }
 
   private async tryClickMessageAndSend(dmText: string): Promise<void> {
-    const wv = this.webview
-    if (!wv) return
-    try {
-      // Click Message / پیام on profile
-      await wv.executeJavaScript(`
-        (async function() {
-          var btns = Array.from(document.querySelectorAll('div[role="button"], button, a'));
-          var msg = btns.find(function(b) {
-            var t = (b.innerText || b.getAttribute('aria-label') || '').trim();
-            return /^(Message|پیام|ارسال پیام)$/i.test(t);
-          });
-          if (msg) { msg.click(); return true; }
-          return false;
-        })()
-      `)
-      await sleep(2000)
-      const sent = await this.sendDm(dmText)
-      if (sent.ok) this.pushActivity('success', 'دایرکت کلیدواژه‌ای ارسال شد')
-      else this.pushActivity('warn', 'دایرکت کلیدواژه: باکس پیام پیدا نشد — دستی چک کنید')
-    } catch {
-      this.pushActivity('warn', 'خطا در باز کردن دایرکت پروفایل')
-    }
+    await this.exec(`
+      (function(){
+        var btns = Array.from(document.querySelectorAll('div[role="button"], button, a'));
+        var msg = btns.find(function(b){
+          var t = (b.innerText || b.getAttribute('aria-label') || '').trim();
+          return /^(Message|پیام|ارسال پیام)$/i.test(t);
+        });
+        if (msg) msg.click();
+      })()
+    `)
+    await sleep(2000)
+    const sent = await this.sendDm(dmText)
+    if (sent.ok) this.pushActivity('success', 'دایرکت کلیدواژه‌ای ارسال شد')
   }
 
   async ensureInjected(webview: WebviewLike, injectorSource: string): Promise<void> {
@@ -355,9 +444,7 @@ export class AutoReplyController {
     }
   }
 
-  handleGuestEvent(_raw: string): void {
-    // reserved
-  }
+  handleGuestEvent(_raw: string): void {}
 }
 
 function sleep(ms: number): Promise<void> {
