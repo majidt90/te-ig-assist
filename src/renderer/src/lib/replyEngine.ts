@@ -17,7 +17,7 @@ export interface ReplyResult {
 
 const GREETINGS = ['سلام', 'salam', 'hi', 'hello', 'درود', 'هی', 'hey']
 const THANKS_KEYS = ['ممنون', 'مرسی', 'تشکر', 'thanks', 'thank', 'دمت']
-const NAME_KEYS = ['اسمت', 'اسم شما', 'اسمتون', 'کی هستی', 'your name', 'نامت']
+const NAME_KEYS = ['اسمت', 'اسم شما', 'اسمتون', 'کی هستی', 'your name', 'نامت', 'اسمت چیه']
 const HOW_ARE_YOU = [
   'حالت',
   'چطوری',
@@ -26,7 +26,7 @@ const HOW_ARE_YOU = [
   'اوضاع',
   'how are you',
   'how r u',
-  'what\'s up'
+  "what's up"
 ]
 const PRICE_KEYS = ['قیمت', 'چنده', 'چند', 'price', 'هزینه', 'چقدر']
 
@@ -49,7 +49,6 @@ function pick<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)]
 }
 
-/** Parse logic lines into condition → action pairs */
 export interface LogicRule {
   raw: string
   condition: string
@@ -57,25 +56,49 @@ export interface LogicRule {
 }
 
 /**
- * Accepts lines like:
- * - اگر حال پرسید تشکر کن و احوال بپرس
- * - اگر پست فرستاد لایک کن
- * - if price then use memory price
+ * Accepts:
+ * - اگر حال پرسید آنگاه تشکر کن و احوال بپرس
+ * - اگر پست فرستاد → لایک کن
+ * - if price then use memory
+ * - حال پرسید => تشکر کن
  */
 export function parseLogicRules(logic: string): LogicRule[] {
   const rules: LogicRule[] = []
   for (const line of linesOf(logic)) {
-    // اگر X آنگاه Y | اگر X ی Y | if X then Y
+    if (line.startsWith('#') || line.startsWith('//')) continue
+
     let m =
       line.match(/^اگر\s+(.+?)\s+(?:آنگاه|آن\s*گاه|پس|→|->|:)\s*(.+)$/i) ||
       line.match(/^if\s+(.+?)\s+then\s+(.+)$/i) ||
-      line.match(/^(.+?)\s*=>\s*(.+)$/)
+      line.match(/^(.+?)\s*(?:=>|→|->)\s*(.+)$/)
+
+    // «اگر X ی Y» / «اگر X ، Y»
+    if (!m) {
+      m = line.match(/^اگر\s+(.+?)\s+[،,]\s*(.+)$/i)
+    }
+    // «اگر X ی/و Y» loosely: اگر + first phrase + action verbs
+    if (!m) {
+      m = line.match(/^اگر\s+(.+?)\s+(تشکر|ممنون|لایک|بپرس|بگو|جواب|سلام|استفاده).+$/i)
+      if (m) {
+        const rest = line.replace(/^اگر\s+/i, '')
+        const cond = m[1].trim()
+        const action = rest.slice(cond.length).trim()
+        if (cond && action) {
+          rules.push({ raw: line, condition: cond, action })
+          continue
+        }
+      }
+    }
+
     if (m) {
       rules.push({ raw: line, condition: m[1].trim(), action: m[2].trim() })
       continue
     }
-    // fallback: whole line as free-form rule (matched loosely)
-    rules.push({ raw: line, condition: line, action: line })
+
+    // Free-form: treat as soft condition only if short; action = use memory + line hint
+    if (line.length <= 80) {
+      rules.push({ raw: line, condition: line, action: 'از حافظه جواب بده' })
+    }
   }
   return rules
 }
@@ -83,11 +106,14 @@ export function parseLogicRules(logic: string): LogicRule[] {
 function conditionMatches(condition: string, incoming: string): boolean {
   const c = normalize(condition)
   const q = normalize(incoming)
+  if (!c || !q) return false
 
-  // keyword bags in condition
   const checks: Array<{ keys: string[]; aliases: string[] }> = [
     { keys: ['حال', 'احوال', 'خوبی', 'چطوری'], aliases: HOW_ARE_YOU },
-    { keys: ['پست', 'ریلز', 'reel', 'photo', 'عکس', 'ویدیو', 'media'], aliases: ['sent an attachment', 'photo', 'video', 'reel', 'post'] },
+    {
+      keys: ['پست', 'ریلز', 'reel', 'photo', 'عکس', 'ویدیو', 'media', 'فرستاد'],
+      aliases: ['sent an attachment', 'photo', 'video', 'reel', 'post', 'attachment']
+    },
     { keys: ['قیمت', 'چنده', 'هزینه'], aliases: PRICE_KEYS },
     { keys: ['سلام', 'احوالپرسی'], aliases: GREETINGS },
     { keys: ['اسم', 'کی هستی'], aliases: NAME_KEYS },
@@ -96,19 +122,25 @@ function conditionMatches(condition: string, incoming: string): boolean {
 
   for (const bag of checks) {
     if (bag.keys.some((k) => c.includes(k))) {
-      if (bag.aliases.some((a) => q.includes(normalize(a))) || bag.keys.some((k) => q.includes(k))) {
+      if (
+        bag.aliases.some((a) => q.includes(normalize(a))) ||
+        bag.keys.some((k) => q.includes(k))
+      ) {
         return true
       }
     }
   }
 
-  // direct word overlap
-  const words = c.split(' ').filter((w) => w.length > 2)
+  // significant word overlap (ignore filler)
+  const stop = new Set(['اگر', 'آنگاه', 'آن', 'گاه', 'پس', 'را', 'رو', 'به', 'از', 'با', 'که', 'و', 'یا', 'the', 'a', 'and', 'then', 'if'])
+  const words = c.split(' ').filter((w) => w.length > 2 && !stop.has(w))
+  if (!words.length) return false
   let hits = 0
   for (const w of words) {
     if (q.includes(w)) hits++
   }
-  return hits >= 1 && words.length > 0
+  // need at least 1 hit for short conditions, 2 for long
+  return words.length <= 3 ? hits >= 1 : hits >= 2
 }
 
 function findNameLine(memoryLines: string[]): string | null {
@@ -141,17 +173,19 @@ function relevantMemory(memory: string, incoming: string): string[] {
     .map((x) => x.line)
 }
 
-function applyActionTemplate(action: string, memory: string, incoming: string): { text: string; actions: ReplyResult['actions'] } {
+function applyActionTemplate(
+  action: string,
+  memory: string,
+  incoming: string
+): { text: string; actions: ReplyResult['actions'] } {
   const a = normalize(action)
   const mem = linesOf(memory)
   const actions: ReplyResult['actions'] = []
 
-  // like shared media
-  if (/لایک|like/.test(a) && /پست|عکس|ویدیو|ریلز|media|attachment|reel/.test(a + normalize(incoming))) {
+  if (/لایک|like/.test(a)) {
     actions.push('like_shared')
   }
 
-  // wellbeing exchange
   if (/تشکر|ممنون|احوال|بپرس|حال/.test(a) || HOW_ARE_YOU.some((k) => normalize(incoming).includes(k))) {
     const thanks = pick(['مرسی که احوال پرسیدی 🌟', 'ممنون از لطف‌تون 🌸', 'خیلی لطف کردید ✨'])
     const ask = pick(['شما چطورید؟', 'امیدوارم حال خودتون عالی باشه، شما چطورید؟', 'اوضاع شما چطوره؟'])
@@ -162,7 +196,6 @@ function applyActionTemplate(action: string, memory: string, incoming: string): 
     }
   }
 
-  // greeting style action
   if (/سلام|خوش.?آمد|خوش آمد/.test(a)) {
     const name = findNameLine(mem)
     return {
@@ -171,15 +204,14 @@ function applyActionTemplate(action: string, memory: string, incoming: string): 
     }
   }
 
-  // use memory / price
   if (/حافظه|memory|قیمت|بگو|جواب/.test(a)) {
     const rel = relevantMemory(memory, incoming)
     if (rel.length) return { text: rel.join('\n'), actions: actions.length ? actions : ['none'] }
     if (mem[0]) return { text: mem[0], actions: actions.length ? actions : ['none'] }
   }
 
-  // If action text is already a reply template, use it (with light memory weave)
-  if (action.length > 8 && !/^اگر\s/.test(action)) {
+  // action is itself a reply template
+  if (action.length > 6 && !/^اگر\s/.test(action) && !/^(از حافظه)/.test(action)) {
     const rel = relevantMemory(memory, incoming)
     if (rel.length) return { text: `${action}\n${rel[0]}`, actions: actions.length ? actions : ['none'] }
     return { text: action, actions: actions.length ? actions : ['none'] }
@@ -193,9 +225,6 @@ function applyActionTemplate(action: string, memory: string, incoming: string): 
   }
 }
 
-/**
- * Main entry: logic first, then memory.
- */
 export function generateSmartReply(
   incomingText: string,
   memory: string,
@@ -206,7 +235,7 @@ export function generateSmartReply(
   const memLines = linesOf(memory)
   const rules = parseLogicRules(logic)
 
-  // 1) Explicit logic rules
+  // 1) User logic rules (first match wins)
   for (const rule of rules) {
     if (conditionMatches(rule.condition, text)) {
       const applied = applyActionTemplate(rule.action, memory, text)
@@ -218,7 +247,7 @@ export function generateSmartReply(
     }
   }
 
-  // 2) Built-in sensible defaults (still use memory)
+  // 2) Built-ins + memory
   if (GREETINGS.some((g) => q === g || q.startsWith(g + ' '))) {
     const name = findNameLine(memLines)
     return {
@@ -243,7 +272,6 @@ export function generateSmartReply(
     }
   }
 
-  // Shared media heuristic
   if (/attachment|photo|video|reel|پست|عکس|ویدیو/i.test(text)) {
     const likeRule = rules.find((r) => /لایک|like/i.test(r.action))
     if (likeRule) {
@@ -277,7 +305,6 @@ export function generateSmartReply(
   return { text: 'پیامتون رو دیدم ✅', actions: ['none'] }
 }
 
-/** Back-compat simple API */
 export function generateReply(incomingText: string, memory: string, logic = ''): string {
   return generateSmartReply(incomingText, memory, logic).text
 }
