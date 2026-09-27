@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Save, Brain, Info, Sparkles, CheckCircle2, Lightbulb } from 'lucide-react'
+import { Save, Brain, Info, Sparkles, CheckCircle2, Lightbulb, Timer } from 'lucide-react'
 import { cn } from '../lib/utils'
 
 interface SettingsPanelProps {
@@ -11,13 +11,20 @@ const MAX_MEMORY_CHARS = 4000
 
 export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.Element {
   const [memory, setMemory] = useState('')
+  const [replyDelaySec, setReplyDelaySec] = useState(2.5)
   const [isSaving, setIsSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [settingsSaved, setSettingsSaved] = useState(false)
 
   useEffect(() => {
-    window.api.getStore('memory').then((val) => {
-      if (typeof val === 'string') setMemory(val)
-    })
+    void (async () => {
+      const [mem, delay] = await Promise.all([
+        window.api.getStore('memory'),
+        window.api.getStore('replyDelayMs')
+      ])
+      if (typeof mem === 'string') setMemory(mem)
+      if (typeof delay === 'number') setReplyDelaySec(delay / 1000)
+    })()
   }, [])
 
   const handleSaveMemory = async () => {
@@ -26,6 +33,13 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
     setIsSaving(false)
     setSaved(true)
     setTimeout(() => setSaved(false), 2200)
+  }
+
+  const handleSaveSettings = async () => {
+    const ms = Math.round(replyDelaySec * 1000)
+    await window.api.setStore('replyDelayMs', ms)
+    setSettingsSaved(true)
+    setTimeout(() => setSettingsSaved(false), 2000)
   }
 
   const charCount = memory.length
@@ -45,13 +59,53 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
           >
             <section>
               <h3 className="mb-2.5 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
+                <Timer className="h-3.5 w-3.5 text-purple-400" />
+                تأخیر پاسخ
+              </h3>
+              <div className="card space-y-3">
+                <p className="text-[12px] leading-relaxed text-[hsl(var(--muted-foreground))]">
+                  بعد از دریافت پیام، چند ثانیه صبر کند و بعد پاسخ بدهد (طبیعی‌تر به‌نظر می‌رسد).
+                </p>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="range"
+                    min={1}
+                    max={10}
+                    step={0.5}
+                    value={replyDelaySec}
+                    onChange={(e) => setReplyDelaySec(Number(e.target.value))}
+                    className="h-1.5 flex-1 cursor-pointer appearance-none rounded-full bg-[hsl(var(--muted))] accent-[hsl(var(--primary))]"
+                  />
+                  <span className="w-12 text-left text-xs font-medium tabular-nums">
+                    {replyDelaySec.toLocaleString('fa-IR')} ث
+                  </span>
+                </div>
+                <button
+                  onClick={handleSaveSettings}
+                  className={cn(
+                    'btn-primary !w-full !py-2 !text-[11px]',
+                    settingsSaved && '!bg-emerald-500'
+                  )}
+                >
+                  {settingsSaved ? 'ذخیره شد' : 'ذخیره تنظیمات'}
+                </button>
+              </div>
+            </section>
+
+            <section>
+              <h3 className="mb-2.5 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
                 <Sparkles className="h-3.5 w-3.5 text-purple-400" />
-                تنظیمات عمومی
+                نحوه کار پاسخ خودکار
               </h3>
               <div className="card space-y-2">
                 <p className="text-[12px] leading-relaxed text-[hsl(var(--muted-foreground))]">
-                  در نسخه‌های بعدی امکان تنظیم تأخیر پاسخ، فیلتر کلمات کلیدی، و اتصال به مدل‌های زبانی
-                  (OpenAI / محلی) اضافه خواهد شد.
+                  ۱. وارد اینستاگرام شوید و یک گفتگوی دایرکت را باز کنید.
+                  <br />
+                  ۲. پاسخ‌گویی را از هدر روشن کنید.
+                  <br />
+                  ۳. حافظه را با اطلاعات کسب‌وکارتان پر کنید.
+                  <br />
+                  ۴. وقتی پیام جدید بیاید، بر اساس حافظه پاسخ ساخته و ارسال می‌شود.
                 </p>
               </div>
             </section>
@@ -59,15 +113,18 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
             <section>
               <h3 className="mb-2.5 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
                 <Info className="h-3.5 w-3.5 text-sky-400" />
-                راهنمای سریع
+                نکات
               </h3>
               <div className="card space-y-2.5">
                 {[
-                  'پنل سمت چپ مرورگر داخلی اینستاگرام است — با حساب خود وارد شوید.',
-                  'در تب «حافظه» دانش کسب‌وکار و سبک پاسخ‌دهی را بنویسید.',
-                  'با روشن کردن دکمه پاسخ‌گویی در هدر، پاسخ خودکار فعال می‌شود.'
+                  'برای دقت بیشتر، گفتگو را باز نگه دارید (صفحه /direct/).',
+                  'از دکمه «لاگ» بالای پنل اینستاگرام وضعیت تشخیص را ببینید.',
+                  'اگر ظاهر اینستاگرام عوض شود، ممکن است نیاز به به‌روزرسانی سلکتورها باشد.'
                 ].map((text, i) => (
-                  <div key={i} className="flex gap-2.5 text-[12px] leading-relaxed text-[hsl(var(--muted-foreground))]">
+                  <div
+                    key={i}
+                    className="flex gap-2.5 text-[12px] leading-relaxed text-[hsl(var(--muted-foreground))]"
+                  >
                     <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[hsl(var(--primary)/0.15)] text-[10px] font-semibold text-[hsl(var(--primary))]">
                       {i + 1}
                     </span>
@@ -80,7 +137,7 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
             <section className="mt-auto">
               <div className="rounded-xl border border-dashed border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.3)] px-3.5 py-3 text-center">
                 <p className="text-[11px] text-[hsl(var(--muted-foreground))]">
-                  نسخه ۰.۱.۰ · ساخته‌شده با دقت برای جامعه فارسی‌زبان
+                  نسخه ۰.۲.۰ · موتور پاسخ خودکار (فاز ۱)
                 </p>
               </div>
             </section>
@@ -110,18 +167,14 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
                   saved && '!bg-emerald-500 !shadow-emerald-500/20'
                 )}
               >
-                {saved ? (
-                  <CheckCircle2 className="h-3.5 w-3.5" />
-                ) : (
-                  <Save className="h-3.5 w-3.5" />
-                )}
+                {saved ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Save className="h-3.5 w-3.5" />}
                 {isSaving ? 'در حال ذخیره...' : saved ? 'ذخیره شد' : 'ذخیره'}
               </button>
             </div>
 
             <p className="mb-3 text-[11.5px] leading-relaxed text-[hsl(var(--muted-foreground))]">
-              دانش کسب‌وکار، قیمت‌ها، ساعات کاری، لحن پاسخ و قوانین را اینجا بنویسید. این متن مبنای
-              پاسخ‌های خودکار خواهد بود.
+              دانش کسب‌وکار، قیمت‌ها، ساعات کاری و لحن پاسخ را بنویسید. موتور پاسخ بر اساس کلمات کلیدی
+              مرتبط‌ترین خطوط را برمی‌گرداند.
             </p>
 
             <div className="relative min-h-0 flex-1">
@@ -130,18 +183,17 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
                 onChange={(e) => {
                   if (e.target.value.length <= MAX_MEMORY_CHARS) setMemory(e.target.value)
                 }}
-                placeholder={`مثال:\nمن صاحب فروشگاه لباس هستم.\nقیمت محصولات از ۲۰۰ تا ۸۰۰ هزار تومان است.\nساعات کاری: ۱۰ صبح تا ۱۰ شب.\nهمیشه مودب و دوستانه پاسخ بده.\nاگر کسی قیمت پرسید، ابتدا بپرس برای چه محصولی.\n...`}
+                placeholder={`مثال:\nمن صاحب فروشگاه لباس هستم.\nقیمت محصولات از ۲۰۰ تا ۸۰۰ هزار تومان است.\nساعات کاری: ۱۰ صبح تا ۱۰ شب.\nهمیشه مودب و دوستانه پاسخ بده.\nاگر کسی قیمت پرسید، ابتدا بپرس برای چه محصولی.`}
                 className="input-field h-full min-h-[180px] resize-none font-normal leading-[1.7]"
                 dir="rtl"
               />
             </div>
 
-            {/* Character counter */}
             <div className="mt-2.5 flex items-center justify-between gap-3">
               <div className="h-1 flex-1 overflow-hidden rounded-full bg-[hsl(var(--muted))]">
                 <motion.div
                   className={cn(
-                    'h-full rounded-full transition-colors',
+                    'h-full rounded-full',
                     charPercent > 90 ? 'bg-amber-500' : 'bg-[hsl(var(--primary))]'
                   )}
                   initial={false}
@@ -157,7 +209,7 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
             <div className="mt-3 flex items-start gap-2 rounded-xl border border-violet-500/15 bg-violet-500/[0.06] px-3 py-2.5">
               <Lightbulb className="mt-0.5 h-3.5 w-3.5 shrink-0 text-violet-400" />
               <p className="text-[11px] leading-relaxed text-violet-200/80">
-                هرچه حافظه دقیق‌تر و ساختارمندتر باشد، کیفیت پاسخ‌های خودکار بالاتر می‌رود.
+                هر خط را موضوعی بنویسید (قیمت، ساعت کاری، ارسال و …) تا تطبیق کلیدواژه دقیق‌تر شود.
               </p>
             </div>
           </motion.div>

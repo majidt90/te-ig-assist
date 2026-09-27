@@ -3,11 +3,11 @@ import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import Store from 'electron-store'
 
-// Store for settings & memory
 const store = new Store({
   defaults: {
     memory: '',
     autoReplyEnabled: false,
+    replyDelayMs: 2500,
     windowBounds: { width: 1400, height: 900 }
   }
 })
@@ -15,10 +15,6 @@ const store = new Store({
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 
-/**
- * Creates a professional 32×32 tray icon (rounded square + camera glyph).
- * Works on Windows / macOS / Linux without external assets.
- */
 function createTrayIcon(): Electron.NativeImage {
   const size = 32
   const buf = Buffer.alloc(size * size * 4)
@@ -32,31 +28,24 @@ function createTrayIcon(): Electron.NativeImage {
     buf[i + 3] = a
   }
 
-  // Rounded rectangle background with soft purple→pink gradient feel
   const radius = 7
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
-      // Distance from nearest edge for rounded corners
       const dx = Math.max(radius - x, 0, x - (size - 1 - radius))
       const dy = Math.max(radius - y, 0, y - (size - 1 - radius))
       const dist = Math.sqrt(dx * dx + dy * dy)
+      if (dist > radius + 0.5) continue
 
-      if (dist > radius + 0.5) continue // outside
-
-      // Gradient: purple (top-left) → pink (bottom-right)
       const t = (x + y) / (size * 2)
-      const r = Math.round(168 + (236 - 168) * t) // 168→236
-      const g = Math.round(85 + (72 - 85) * t) // 85→72
-      const b = Math.round(247 + (153 - 247) * t) // 247→153
-
-      // Soft antialias on edge
-      const alpha = dist > radius - 0.8 ? Math.round(255 * (1 - (dist - (radius - 0.8)) / 1.3)) : 255
+      const r = Math.round(168 + (236 - 168) * t)
+      const g = Math.round(85 + (72 - 85) * t)
+      const b = Math.round(247 + (153 - 247) * t)
+      const alpha =
+        dist > radius - 0.8 ? Math.round(255 * (1 - (dist - (radius - 0.8)) / 1.3)) : 255
       setPixel(x, y, r, g, b, Math.max(0, alpha))
     }
   }
 
-  // White camera glyph (simplified Instagram-style)
-  // Outer rounded rectangle (camera body)
   const camPad = 8
   const camW = size - camPad * 2
   const camH = size - camPad * 2 - 2
@@ -68,27 +57,22 @@ function createTrayIcon(): Electron.NativeImage {
       const dy = Math.max(camR - (y - camPad), 0, y - (camPad + camH - 1 - camR))
       const dist = Math.sqrt(dx * dx + dy * dy)
       if (dist <= camR + 0.3) {
-        // Only draw the border (ring)
         const inner = dist < camR - 1.6
         if (!inner) setPixel(x, y, 255, 255, 255, 230)
       }
     }
   }
 
-  // Inner circle (lens)
   const cx = size / 2
   const cy = size / 2 + 0.5
   const lensR = 4.2
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
       const d = Math.sqrt((x - cx) ** 2 + (y - cy) ** 2)
-      if (d <= lensR && d >= lensR - 1.5) {
-        setPixel(x, y, 255, 255, 255, 240)
-      }
+      if (d <= lensR && d >= lensR - 1.5) setPixel(x, y, 255, 255, 255, 240)
     }
   }
 
-  // Small top-right dot (flash)
   setPixel(22, 10, 255, 255, 255, 220)
   setPixel(23, 10, 255, 255, 255, 180)
   setPixel(22, 11, 255, 255, 255, 180)
@@ -108,7 +92,7 @@ function createWindow(): void {
     autoHideMenuBar: true,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     backgroundColor: '#0a0a0a',
-    icon: createTrayIcon(), // also use as window icon
+    icon: createTrayIcon(),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: true,
@@ -130,7 +114,6 @@ function createWindow(): void {
     }
   })
 
-  // Close → hide (stay in tray)
   mainWindow.on('close', (event) => {
     if (!(app as any).isQuitting) {
       event.preventDefault()
@@ -143,6 +126,14 @@ function createWindow(): void {
     return { action: 'deny' }
   })
 
+  // Allow webview guest to use limited features
+  mainWindow.webContents.on('will-attach-webview', (_event, webPreferences) => {
+    webPreferences.nodeIntegration = false
+    webPreferences.contextIsolation = true
+    // Do not attach app preload to guest
+    delete (webPreferences as any).preload
+  })
+
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
@@ -152,7 +143,6 @@ function createWindow(): void {
 
 function createTray(): void {
   const icon = createTrayIcon()
-  // macOS prefers template images for menu bar; keep colored for brand consistency
   tray = new Tray(icon)
 
   const contextMenu = Menu.buildFromTemplate([
@@ -185,7 +175,6 @@ function createTray(): void {
     mainWindow?.focus()
   })
 
-  // Single click also shows on Windows
   tray.on('click', () => {
     if (process.platform === 'win32') {
       mainWindow?.show()
@@ -194,7 +183,6 @@ function createTray(): void {
   })
 }
 
-// IPC
 ipcMain.handle('store:get', (_event, key: string) => store.get(key))
 ipcMain.handle('store:set', (_event, key: string, value: unknown) => {
   store.set(key, value)
@@ -218,9 +206,7 @@ app.whenReady().then(() => {
   })
 })
 
-app.on('window-all-closed', () => {
-  // Stay alive in tray
-})
+app.on('window-all-closed', () => {})
 
 app.on('before-quit', () => {
   ;(app as any).isQuitting = true

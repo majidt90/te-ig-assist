@@ -1,13 +1,59 @@
-import { useRef, useEffect, useState } from 'react'
+import { useRef, useEffect, useState, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Instagram, RefreshCw, ArrowLeft, ArrowRight } from 'lucide-react'
+import { Instagram, RefreshCw, ArrowLeft, ArrowRight, Activity, ChevronDown, ChevronUp } from 'lucide-react'
 import { cn } from '../lib/utils'
+import { INJECTOR_SOURCE } from '../lib/instagramInjector'
+import { autoReplyController, type ActivityItem } from '../lib/autoReplyController'
 
 export default function InstagramPanel(): JSX.Element {
   const webviewRef = useRef<Electron.WebviewTag | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [canGoBack, setCanGoBack] = useState(false)
   const [canGoForward, setCanGoForward] = useState(false)
+  const [activities, setActivities] = useState<ActivityItem[]>([])
+  const [logOpen, setLogOpen] = useState(false)
+  const injectedRef = useRef(false)
+
+  const injectMonitor = useCallback(async () => {
+    const wv = webviewRef.current
+    if (!wv) return
+    try {
+      await autoReplyController.ensureInjected(wv, INJECTOR_SOURCE)
+      injectedRef.current = true
+    } catch {
+      // retry later
+    }
+  }, [])
+
+  useEffect(() => {
+    // Sync controller with store
+    void (async () => {
+      const [enabled, memory, delay] = await Promise.all([
+        window.api.getStore('autoReplyEnabled'),
+        window.api.getStore('memory'),
+        window.api.getStore('replyDelayMs')
+      ])
+      autoReplyController.setEnabled(Boolean(enabled))
+      autoReplyController.setMemory(typeof memory === 'string' ? memory : '')
+      if (typeof delay === 'number') autoReplyController.setReplyDelay(delay)
+    })()
+
+    const unsub = autoReplyController.subscribe(setActivities)
+    return unsub
+  }, [])
+
+  // Re-sync when store might change from Settings (poll light)
+  useEffect(() => {
+    const id = setInterval(async () => {
+      const [enabled, memory] = await Promise.all([
+        window.api.getStore('autoReplyEnabled'),
+        window.api.getStore('memory')
+      ])
+      autoReplyController.setEnabled(Boolean(enabled))
+      autoReplyController.setMemory(typeof memory === 'string' ? memory : '')
+    }, 2000)
+    return () => clearInterval(id)
+  }, [])
 
   useEffect(() => {
     const webview = webviewRef.current
@@ -22,24 +68,57 @@ export default function InstagramPanel(): JSX.Element {
     const handleStop = () => {
       setIsLoading(false)
       updateNav()
+      // Inject after load settles
+      setTimeout(() => void injectMonitor(), 600)
+    }
+
+    const handleConsole = (e: Electron.ConsoleMessageEvent) => {
+      const msg = e.message || ''
+      if (msg.includes('TE_IG|')) {
+        // message may include extra formatting; extract TE_IG|...JSON
+        const idx = msg.indexOf('TE_IG|')
+        const slice = msg.slice(idx)
+        autoReplyController.handleGuestEvent(slice, webview)
+      }
+    }
+
+    const handleNav = () => {
+      updateNav()
+      injectedRef.current = false
+      setTimeout(() => void injectMonitor(), 900)
     }
 
     webview.addEventListener('did-start-loading', handleStart)
     webview.addEventListener('did-stop-loading', handleStop)
-    webview.addEventListener('did-navigate', updateNav)
-    webview.addEventListener('did-navigate-in-page', updateNav)
+    webview.addEventListener('did-navigate', handleNav)
+    webview.addEventListener('did-navigate-in-page', handleNav)
+    webview.addEventListener('console-message', handleConsole as any)
 
     return () => {
       webview.removeEventListener('did-start-loading', handleStart)
       webview.removeEventListener('did-stop-loading', handleStop)
-      webview.removeEventListener('did-navigate', updateNav)
-      webview.removeEventListener('did-navigate-in-page', updateNav)
+      webview.removeEventListener('did-navigate', handleNav)
+      webview.removeEventListener('did-navigate-in-page', handleNav)
+      webview.removeEventListener('console-message', handleConsole as any)
     }
-  }, [])
+  }, [injectMonitor])
 
   const handleRefresh = () => webviewRef.current?.reload()
   const handleBack = () => webviewRef.current?.goBack()
   const handleForward = () => webviewRef.current?.goForward()
+
+  const levelColor = (level: ActivityItem['level']): string => {
+    switch (level) {
+      case 'success':
+        return 'text-emerald-400'
+      case 'warn':
+        return 'text-amber-400'
+      case 'error':
+        return 'text-red-400'
+      default:
+        return 'text-white/55'
+    }
+  }
 
   return (
     <div className="relative flex h-full w-full flex-col bg-[#0a0a0a]">
@@ -53,11 +132,11 @@ export default function InstagramPanel(): JSX.Element {
               'rounded-md p-1.5 transition-colors',
               canGoBack
                 ? 'text-white/60 hover:bg-white/10 hover:text-white'
-                : 'text-white/20 cursor-not-allowed'
+                : 'cursor-not-allowed text-white/20'
             )}
             title="برگشت"
           >
-            <ArrowRight className="h-3.5 w-3.5" /> {/* RTL: right = back */}
+            <ArrowRight className="h-3.5 w-3.5" />
           </button>
           <button
             onClick={handleForward}
@@ -66,7 +145,7 @@ export default function InstagramPanel(): JSX.Element {
               'rounded-md p-1.5 transition-colors',
               canGoForward
                 ? 'text-white/60 hover:bg-white/10 hover:text-white'
-                : 'text-white/20 cursor-not-allowed'
+                : 'cursor-not-allowed text-white/20'
             )}
             title="جلو"
           >
@@ -77,20 +156,64 @@ export default function InstagramPanel(): JSX.Element {
 
           <div className="flex items-center gap-1.5 px-1">
             <Instagram className="h-3.5 w-3.5 text-pink-400" />
-            <span className="text-[11px] font-medium tracking-wide text-white/50">
-              instagram.com
-            </span>
+            <span className="text-[11px] font-medium tracking-wide text-white/50">instagram.com</span>
           </div>
         </div>
 
-        <button
-          onClick={handleRefresh}
-          className="rounded-md p-1.5 text-white/50 transition-colors hover:bg-white/10 hover:text-white"
-          title="بارگذاری مجدد"
-        >
-          <RefreshCw className={cn('h-3.5 w-3.5', isLoading && 'animate-spin')} />
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => setLogOpen((v) => !v)}
+            className={cn(
+              'flex items-center gap-1 rounded-md px-2 py-1 text-[10px] transition-colors',
+              logOpen ? 'bg-white/10 text-white' : 'text-white/50 hover:bg-white/10 hover:text-white'
+            )}
+            title="لاگ فعالیت"
+          >
+            <Activity className="h-3.5 w-3.5" />
+            لاگ
+            {logOpen ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+          </button>
+          <button
+            onClick={handleRefresh}
+            className="rounded-md p-1.5 text-white/50 transition-colors hover:bg-white/10 hover:text-white"
+            title="بارگذاری مجدد"
+          >
+            <RefreshCw className={cn('h-3.5 w-3.5', isLoading && 'animate-spin')} />
+          </button>
+        </div>
       </div>
+
+      {/* Activity log drawer */}
+      <AnimatePresence>
+        {logOpen && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="overflow-hidden border-b border-white/[0.06] bg-black/90"
+          >
+            <div className="max-h-36 space-y-1 overflow-y-auto px-3 py-2">
+              {activities.length === 0 ? (
+                <p className="text-[11px] text-white/35">هنوز رویدادی ثبت نشده — وارد دایرکت شوید.</p>
+              ) : (
+                activities.slice(0, 12).map((a) => (
+                  <div key={a.id} className="flex gap-2 text-[11px] leading-relaxed">
+                    <span className="shrink-0 tabular-nums text-white/30">
+                      {new Date(a.at).toLocaleTimeString('fa-IR', {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        second: '2-digit'
+                      })}
+                    </span>
+                    <span className={cn(levelColor(a.level))}>{a.message}</span>
+                  </div>
+                ))
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* WebView area */}
       <div className="relative flex-1">
@@ -115,7 +238,7 @@ export default function InstagramPanel(): JSX.Element {
 
         <webview
           ref={webviewRef as any}
-          src="https://www.instagram.com"
+          src="https://www.instagram.com/direct/inbox/"
           className="h-full w-full"
           // @ts-expect-error webview attributes
           allowpopups="true"
