@@ -1,5 +1,5 @@
 /**
- * Instagram injector — unread-only conversation listing.
+ * Instagram injector — unread-only, force scan after open.
  */
 
 export const INJECTOR_SOURCE = `
@@ -32,7 +32,7 @@ export const INJECTOR_SOURCE = `
   }
   function markSeen(fp) {
     SEEN.add(fp);
-    if (SEEN.size > 1200) SEEN.delete(SEEN.values().next().value);
+    if (SEEN.size > 1500) SEEN.delete(SEEN.values().next().value);
   }
 
   function isProbablyOutgoing(el) {
@@ -56,17 +56,27 @@ export const INJECTOR_SOURCE = `
         var w = parseFloat(st.width) || 0;
         var h = parseFloat(st.height) || 0;
         if (w >= 4 && w <= 16 && h >= 4 && h <= 16) {
-          if (/0,?\\s*149,?\\s*246|55,?\\s*151,?\\s*240|0,?\\s*55,?\\s*107/.test(bg)) return true;
+          if (/0,?\\s*149,?\\s*246|55,?\\s*151,?\\s*240/.test(bg)) return true;
         }
       } catch (e) {}
     }
     return false;
   }
 
+  function isYouSentPreview(text) {
+    return /you sent|شما ارسال|شما فرستاد/i.test(text || '');
+  }
+
   function isUnreadRow(row) {
     if (!row) return false;
+    var preview = (row.innerText || '').replace(/\\s+/g, ' ');
+    // Not unread for us if only our outbound is highlighted
+    if (isYouSentPreview(preview) && !/\\d+\\s*new message/i.test(preview) && !/Unread/i.test(preview)) {
+      return false;
+    }
+    if (/\\d+\\s*new message|Unread|خوانده\s*نشده|نخوانده/i.test(preview)) return true;
     if (hasBlueUnreadIndicator(row)) return true;
-    var aria = (row.getAttribute('aria-label') || '') + ' ' + (row.getAttribute('aria-describedby') || '');
+    var aria = row.getAttribute('aria-label') || '';
     if (/unread|خوانده|نخوانده|new message/i.test(aria)) return true;
     try {
       var spans = row.querySelectorAll('span');
@@ -75,7 +85,6 @@ export const INJECTOR_SOURCE = `
         var fw = window.getComputedStyle(spans[s]).fontWeight || '';
         if (parseInt(fw, 10) >= 600 || fw === 'bold') boldCount++;
       }
-      // IG unread: name + preview often bold
       if (boldCount >= 2) return true;
     } catch (e) {}
     return false;
@@ -108,7 +117,47 @@ export const INJECTOR_SOURCE = `
     return out;
   }
 
-  function scanDms() {
+  function queueIncomingFromNodes(nodes, forceLast) {
+    var classified = nodes.map(function (n) {
+      return { text: n.text, outgoing: isProbablyOutgoing(n.el) };
+    });
+    var lastOut = -1;
+    for (var j = 0; j < classified.length; j++) {
+      if (classified[j].outgoing) lastOut = j;
+    }
+    var startIdx = lastOut >= 0 ? lastOut + 1 : Math.max(0, classified.length - 1);
+    var queued = 0;
+
+    for (var k = startIdx; k < classified.length; k++) {
+      var item = classified[k];
+      if (item.outgoing) continue;
+      var fp = fingerprint(item.text, 'dm');
+      if (!forceLast && SEEN.has(fp)) continue;
+      markSeen(fp);
+      if (lastSentText && item.text.indexOf(lastSentText.slice(0, 24)) !== -1) continue;
+      PENDING.push({ id: fp + (forceLast ? '|f' : ''), text: item.text, kind: 'dm_incoming', channel: 'dm' });
+      queued++;
+    }
+
+    // Force: always try last non-outgoing bubble
+    if (forceLast && queued === 0 && classified.length) {
+      for (var i = classified.length - 1; i >= 0; i--) {
+        if (classified[i].outgoing) continue;
+        var fp2 = fingerprint(classified[i].text, 'dm');
+        markSeen(fp2);
+        PENDING.push({ id: fp2 + '|force', text: classified[i].text, kind: 'dm_incoming', channel: 'dm' });
+        queued++;
+        break;
+      }
+    }
+
+    for (var m = 0; m < startIdx && m < classified.length; m++) {
+      markSeen(fingerprint(classified[m].text, 'dm'));
+    }
+    return queued;
+  }
+
+  function scanDms(force) {
     if (!isDirectPage() && !hasCompose()) {
       lastScanInfo = { path: path(), dmNodes: 0, queued: 0, thread: false, method: 'skip' };
       return;
@@ -117,36 +166,10 @@ export const INJECTOR_SOURCE = `
       lastScanInfo = { path: path(), dmNodes: 0, queued: 0, thread: false, method: 'inbox_only' };
       return;
     }
-
     var nodes = collectDmCandidates();
-    lastScanInfo = { path: path(), dmNodes: nodes.length, queued: 0, thread: true, method: 'tail' };
+    lastScanInfo = { path: path(), dmNodes: nodes.length, queued: 0, thread: true, method: force ? 'force' : 'tail' };
     if (!nodes.length) return;
-
-    var classified = nodes.map(function (n) {
-      return { text: n.text, outgoing: isProbablyOutgoing(n.el) };
-    });
-
-    var lastOut = -1;
-    for (var j = 0; j < classified.length; j++) {
-      if (classified[j].outgoing) lastOut = j;
-    }
-    var startIdx = lastOut >= 0 ? lastOut + 1 : Math.max(0, classified.length - 1);
-    if (lastOut < 0) lastScanInfo.method = 'last_only';
-
-    for (var k = startIdx; k < classified.length; k++) {
-      var item = classified[k];
-      if (item.outgoing) continue;
-      var fp = fingerprint(item.text, 'dm');
-      if (SEEN.has(fp)) continue;
-      markSeen(fp);
-      if (lastSentText && item.text.indexOf(lastSentText.slice(0, 24)) !== -1) continue;
-      PENDING.push({ id: fp, text: item.text, kind: 'dm_incoming', channel: 'dm' });
-      lastScanInfo.queued++;
-    }
-
-    for (var m = 0; m < startIdx && m < classified.length; m++) {
-      markSeen(fingerprint(classified[m].text, 'dm'));
-    }
+    lastScanInfo.queued = queueIncomingFromNodes(nodes, !!force);
   }
 
   function scanComments() {
@@ -177,9 +200,14 @@ export const INJECTOR_SOURCE = `
   }
 
   function scan() {
-    try { scanDms(); } catch (e) {}
+    try { scanDms(false); } catch (e) {}
     try { scanComments(); } catch (e) {}
   }
+
+  window.__TE_IG_FORCE_SCAN_THREAD__ = function () {
+    try { scanDms(true); } catch (e) {}
+    return lastScanInfo;
+  };
 
   window.__TE_IG_POLL__ = function () {
     try { scan(); } catch (e) {}
@@ -203,60 +231,22 @@ export const INJECTOR_SOURCE = `
     };
   };
 
-  /** ONLY unread conversations */
-  window.__TE_IG_LIST_CONVERSATIONS__ = function () {
-    var items = [];
-    var seen = new Set();
-
-    function consider(el, href) {
-      if (!el || !isUnreadRow(el)) return;
-      var preview = (el.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 100);
-      var key = href || preview.slice(0, 50);
-      if (!preview || seen.has(key)) return;
-      seen.add(key);
-      items.push({ index: items.length, preview: preview, href: href || '', unread: true });
-    }
-
+  function collectUnreadRows() {
+    var rows = [];
     var anchors = document.querySelectorAll('a[href*="/direct/t/"]');
+    var seenHref = {};
     for (var i = 0; i < anchors.length; i++) {
       var a = anchors[i];
       var href = a.getAttribute('href') || '';
-      var row = a.closest('[role="button"]') || a.parentElement;
-      consider(row || a, href);
-      if (items.length >= 15) break;
+      if (!href || seenHref[href]) continue;
+      var row = a.closest('[role="button"]') || a.parentElement || a;
+      if (!isUnreadRow(row)) continue;
+      var preview = (row.innerText || '').replace(/\\s+/g, ' ').trim();
+      if (isYouSentPreview(preview) && !/\\d+\\s*new message/i.test(preview)) continue;
+      seenHref[href] = true;
+      rows.push({ el: a, href: href, preview: preview.slice(0, 100) });
     }
-
-    if (items.length === 0) {
-      var rows = document.querySelectorAll(
-        '[role="listbox"] [role="button"], [role="list"] [role="button"], div[role="button"]'
-      );
-      for (var r = 0; r < rows.length && items.length < 15; r++) {
-        var el = rows[r];
-        try {
-          var rect = el.getBoundingClientRect();
-          if (rect.height < 40 || rect.height > 120) continue;
-          if (rect.left > (window.innerWidth || 800) * 0.55) continue;
-        } catch (e) { continue; }
-        var link = el.querySelector('a[href*="/direct/t/"]');
-        consider(el, link ? (link.getAttribute('href') || '') : '');
-      }
-    }
-
-    return items;
-  };
-
-  window.__TE_IG_LIST_UNREAD__ = window.__TE_IG_LIST_CONVERSATIONS__;
-
-  window.__TE_IG_OPEN_CONV_INDEX__ = function (index) {
-    // Re-list unread only and click
-    var unreadRows = [];
-    var anchors = document.querySelectorAll('a[href*="/direct/t/"]');
-    for (var i = 0; i < anchors.length; i++) {
-      var a = anchors[i];
-      var row = a.closest('[role="button"]') || a.parentElement;
-      if (row && isUnreadRow(row)) unreadRows.push({ el: a, href: a.getAttribute('href') || '' });
-    }
-    if (!unreadRows.length) {
+    if (!rows.length) {
       var candidates = document.querySelectorAll(
         '[role="listbox"] [role="button"], [role="list"] [role="button"], div[role="button"]'
       );
@@ -264,17 +254,40 @@ export const INJECTOR_SOURCE = `
         var el = candidates[r];
         try {
           var rect = el.getBoundingClientRect();
-          if (rect.height < 40 || rect.height > 120) continue;
+          if (rect.height < 40 || rect.height > 130) continue;
           if (rect.left > (window.innerWidth || 800) * 0.55) continue;
         } catch (e) { continue; }
-        if (isUnreadRow(el)) unreadRows.push({ el: el, href: '' });
+        if (!isUnreadRow(el)) continue;
+        var prev = (el.innerText || '').replace(/\\s+/g, ' ').trim();
+        if (isYouSentPreview(prev) && !/\\d+\\s*new message/i.test(prev)) continue;
+        rows.push({ el: el, href: '', preview: prev.slice(0, 100) });
       }
     }
-    if (unreadRows[index]) {
-      unreadRows[index].el.click();
-      return { ok: true, via: 'unread_click', total: unreadRows.length };
-    }
-    return { ok: false, reason: 'no_unread', total: unreadRows.length };
+    return rows;
+  }
+
+  window.__TE_IG_LIST_CONVERSATIONS__ = function () {
+    var rows = collectUnreadRows();
+    return rows.map(function (r, idx) {
+      return { index: idx, preview: r.preview, href: r.href, unread: true };
+    });
+  };
+
+  window.__TE_IG_LIST_UNREAD__ = window.__TE_IG_LIST_CONVERSATIONS__;
+
+  /** Always open the first remaining unread (stable after list shrinks) */
+  window.__TE_IG_OPEN_FIRST_UNREAD__ = function () {
+    var rows = collectUnreadRows();
+    if (!rows.length) return { ok: false, reason: 'no_unread', total: 0 };
+    rows[0].el.click();
+    return { ok: true, via: 'first_unread', total: rows.length, preview: rows[0].preview };
+  };
+
+  window.__TE_IG_OPEN_CONV_INDEX__ = function (index) {
+    var rows = collectUnreadRows();
+    if (!rows[index]) return { ok: false, reason: 'no_unread', total: rows.length };
+    rows[index].el.click();
+    return { ok: true, via: 'index', total: rows.length, preview: rows[index].preview };
   };
 
   window.__TE_IG_OPEN_HREF__ = function (href) {
@@ -308,23 +321,10 @@ export const INJECTOR_SOURCE = `
     return out.slice(0, 12);
   };
 
-  /** Like shared post/media in open DM thread */
   window.__TE_IG_LIKE_SHARED__ = function () {
     var buttons = document.querySelectorAll('[aria-label="Like"], [aria-label="پسندیدن"], [aria-label*="Like"]');
     for (var i = 0; i < buttons.length; i++) {
-      try {
-        buttons[i].click();
-        return { ok: true };
-      } catch (e) {}
-    }
-    // heart svg buttons near media
-    var all = document.querySelectorAll('div[role="button"], button');
-    for (var j = 0; j < all.length; j++) {
-      var al = (all[j].getAttribute('aria-label') || '').toLowerCase();
-      if (al === 'like' || al.indexOf('like') !== -1) {
-        all[j].click();
-        return { ok: true };
-      }
+      try { buttons[i].click(); return { ok: true }; } catch (e) {}
     }
     return { ok: false, reason: 'no_like_btn' };
   };
