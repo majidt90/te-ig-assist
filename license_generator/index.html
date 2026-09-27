@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TE IG Assist — License Generator</title>
+  <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #09090b;
+      --card: #12121a;
+      --border: #27272f;
+      --text: #fafafa;
+      --muted: #a1a1aa;
+      --primary: #a855f7;
+      --accent: #ec4899;
+      --danger: #f87171;
+      --ok: #4ade80;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Vazirmatn, Tahoma, system-ui, sans-serif;
+      background: radial-gradient(ellipse at 20% 0%, #1e1035 0%, var(--bg) 50%);
+      color: var(--text);
+      padding: 28px 16px 48px;
+    }
+    .wrap { max-width: 960px; margin: 0 auto; }
+    h1 {
+      margin: 0 0 4px;
+      font-size: 1.35rem;
+      background: linear-gradient(90deg, var(--primary), var(--accent));
+      -webkit-background-clip: text;
+      color: transparent;
+    }
+    .sub { color: var(--muted); font-size: 0.8rem; margin-bottom: 22px; }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 20px;
+    }
+    @media (min-width: 880px) {
+      .grid { grid-template-columns: 340px 1fr; align-items: start; }
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 20px;
+      box-shadow: 0 16px 50px rgba(0,0,0,0.35);
+    }
+    label { display: block; font-size: 0.72rem; color: var(--muted); margin-bottom: 5px; }
+    input, select, textarea {
+      width: 100%;
+      background: #0a0a0e;
+      border: 1px solid var(--border);
+      border-radius: 11px;
+      color: var(--text);
+      padding: 10px 12px;
+      font-size: 0.85rem;
+      margin-bottom: 12px;
+      outline: none;
+      font-family: inherit;
+    }
+    input:focus, select:focus, textarea:focus { border-color: var(--primary); }
+    textarea { min-height: 88px; font-family: ui-monospace, monospace; font-size: 0.68rem; direction: ltr; text-align: left; }
+    button {
+      border: 0;
+      border-radius: 11px;
+      padding: 10px 14px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 0.82rem;
+    }
+    .btn-primary {
+      width: 100%;
+      background: linear-gradient(90deg, var(--primary), var(--accent));
+      color: white;
+    }
+    .btn-ghost {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--muted);
+    }
+    .btn-danger {
+      background: rgba(248,113,113,0.12);
+      color: var(--danger);
+      border: 1px solid rgba(248,113,113,0.25);
+      padding: 6px 10px;
+      font-size: 0.72rem;
+    }
+    .btn-sm {
+      background: rgba(168,85,247,0.12);
+      color: #d8b4fe;
+      border: 1px solid rgba(168,85,247,0.3);
+      padding: 6px 10px;
+      font-size: 0.72rem;
+    }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+    .hint { font-size: 0.68rem; color: var(--muted); line-height: 1.65; margin-top: 10px; }
+    .toast {
+      position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+      background: #166534; color: #bbf7d0; padding: 8px 16px; border-radius: 999px;
+      font-size: 0.8rem; display: none; z-index: 50;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 0.75rem; }
+    th, td {
+      text-align: right;
+      padding: 10px 8px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    th { color: var(--muted); font-weight: 500; font-size: 0.68rem; }
+    td.mono { direction: ltr; text-align: left; font-family: ui-monospace, monospace; font-size: 0.65rem; word-break: break-all; }
+    .empty { color: var(--muted); text-align: center; padding: 28px 8px; font-size: 0.8rem; }
+    .head-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; gap: 8px; }
+    .head-row h2 { margin: 0; font-size: 0.95rem; }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 0.65rem;
+      background: rgba(74,222,128,0.12);
+      color: var(--ok);
+    }
+    .badge.expired { background: rgba(248,113,113,0.12); color: var(--danger); }
+    .edit-row input { margin-bottom: 6px; font-size: 0.78rem; padding: 7px 10px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>تولید لایسنس TE IG Assist</h1>
+    <p class="sub">سازنده: مجید محبوبیان · تیم TERMIMAL · ذخیره‌سازی محلی در مرورگر</p>
+
+    <div class="grid">
+      <div class="card">
+        <form id="form">
+          <input type="hidden" id="editId" value="" />
+          <label>نام کاربری</label>
+          <input id="username" placeholder="majid" required autocomplete="off" />
+
+          <label>ایمیل</label>
+          <input id="email" type="email" placeholder="user@example.com" required autocomplete="off" />
+
+          <label>قفل (خالی = رندوم)</label>
+          <input id="lock" placeholder="اختیاری" autocomplete="off" />
+
+          <label>اعتبار (روز)</label>
+          <input id="days" type="number" min="1" max="3650" value="365" />
+
+          <label>یادداشت</label>
+          <input id="note" placeholder="مثلاً مشتری فروشگاه X" />
+
+          <div class="actions">
+            <button type="submit" class="btn-primary" id="submitBtn">تولید و ذخیره</button>
+            <button type="button" class="btn-ghost" id="resetBtn" style="flex:1">پاک کردن فرم</button>
+          </div>
+        </form>
+        <p class="hint">
+          هر رکورد شامل یوزرنیم، ایمیل، قفل، تاریخ انقضا و لایسنس است و در
+          <b>localStorage</b> این مرورگر ذخیره می‌شود. برای تحویل به کاربر هر چهار مقدار لازم است.
+        </p>
+      </div>
+
+      <div class="card">
+        <div class="head-row">
+          <h2>لیست لایسنس‌ها</h2>
+          <button type="button" class="btn-ghost" id="exportBtn">خروجی JSON</button>
+        </div>
+        <div id="list"></div>
+      </div>
+    </div>
+  </div>
+  <div class="toast" id="toast">ذخیره شد</div>
+
+  <script>
+    const APP_SECRET = 'TE-IG-ASSIST-TERMIMAL-2026-v1'
+    const STORAGE_KEY = 'te_ig_license_records_v1'
+
+    async function sha256Hex(input) {
+      const data = new TextEncoder().encode(input)
+      const buf = await crypto.subtle.digest('SHA-256', data)
+      return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('')
+    }
+
+    function randomLock(len = 28) {
+      const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789abcdefghijkmnopqrstuvwxyz'
+      const arr = new Uint8Array(len)
+      crypto.getRandomValues(arr)
+      let out = ''
+      for (let i = 0; i < len; i++) out += chars[arr[i] % chars.length]
+      return out
+    }
+
+    async function generateLicense({ username, email, lock, daysValid }) {
+      const u = username.trim().replace(/^@/, '').toLowerCase()
+      const e = email.trim().toLowerCase()
+      const l = (lock || randomLock()).trim()
+      const days = Math.max(1, Math.min(3650, Number(daysValid) || 365))
+      const d = new Date()
+      d.setDate(d.getDate() + days)
+      const expiresAt = d.toISOString()
+      const material = u + '|' + e + '|' + l + '|' + expiresAt + '|' + APP_SECRET
+      const h1 = await sha256Hex(material)
+      const h2 = await sha256Hex(h1 + '|' + material)
+      const h3 = await sha256Hex(h2 + '|' + h1 + '|' + APP_SECRET)
+      const h4 = await sha256Hex(u + '|' + h3 + '|' + e + '|' + expiresAt)
+      const body = (h1 + h2 + h3 + h4 + h1.slice(0, 64)).slice(0, 320)
+      return { license: 'TEIG1.' + body, lock: l, username: u, email: e, expiresAt, daysValid: days }
+    }
+
+    function loadRecords() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY)
+        const list = raw ? JSON.parse(raw) : []
+        return Array.isArray(list) ? list : []
+      } catch { return [] }
+    }
+
+    function saveRecords(list) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(list))
+    }
+
+    function toast(msg) {
+      const el = document.getElementById('toast')
+      el.textContent = msg
+      el.style.display = 'block'
+      setTimeout(() => { el.style.display = 'none' }, 1600)
+    }
+
+    function isExpired(iso) {
+      return new Date(iso).getTime() < Date.now()
+    }
+
+    function formatDate(iso) {
+      try {
+        return new Date(iso).toLocaleDateString('fa-IR')
+      } catch { return iso }
+    }
+
+    function remainingLabel(iso) {
+      const ms = new Date(iso).getTime() - Date.now()
+      if (ms <= 0) return 'منقضی'
+      const days = Math.floor(ms / 86400000)
+      const hours = Math.floor((ms % 86400000) / 3600000)
+      return days + ' روز و ' + hours + ' ساعت'
+    }
+
+    function render() {
+      const list = loadRecords().sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
+      const root = document.getElementById('list')
+      if (!list.length) {
+        root.innerHTML = '<div class="empty">هنوز لایسنسی ذخیره نشده</div>'
+        return
+      }
+      let html = '<table><thead><tr><th>کاربر</th><th>انقضا</th><th>لایسنس / قفل</th><th></th></tr></thead><tbody>'
+      for (const r of list) {
+        const exp = isExpired(r.expiresAt)
+        html += '<tr data-id="' + r.id + '">' +
+          '<td><b>' + escapeHtml(r.username) + '</b><br/><span style="color:var(--muted)">' + escapeHtml(r.email) + '</span>' +
+          (r.note ? '<br/><span style="color:var(--muted);font-size:0.68rem">' + escapeHtml(r.note) + '</span>' : '') +
+          '</td>' +
+          '<td><span class="badge' + (exp ? ' expired' : '') + '">' + (exp ? 'منقضی' : remainingLabel(r.expiresAt)) + '</span><br/>' +
+          '<span style="color:var(--muted);font-size:0.68rem">' + formatDate(r.expiresAt) + '</span></td>' +
+          '<td class="mono"><div title="قفل">🔒 ' + escapeHtml(r.lock) + '</div><div style="margin-top:4px;max-height:48px;overflow:hidden" title="لایسنس">' + escapeHtml(r.license) + '</div></td>' +
+          '<td style="white-space:nowrap">' +
+          '<button type="button" class="btn-sm" data-act="copy">کپی</button> ' +
+          '<button type="button" class="btn-sm" data-act="edit">ویرایش</button> ' +
+          '<button type="button" class="btn-danger" data-act="del">حذف</button>' +
+          '</td></tr>'
+      }
+      html += '</tbody></table>'
+      root.innerHTML = html
+    }
+
+    function escapeHtml(s) {
+      return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))
+    }
+
+    document.getElementById('form').onsubmit = async (e) => {
+      e.preventDefault()
+      const editId = document.getElementById('editId').value
+      const username = document.getElementById('username').value
+      const email = document.getElementById('email').value
+      const lockIn = document.getElementById('lock').value
+      const days = document.getElementById('days').value
+      const note = document.getElementById('note').value
+
+      const gen = await generateLicense({ username, email, lock: lockIn, daysValid: days })
+      const records = loadRecords()
+      const row = {
+        id: editId || (Date.now().toString(36) + Math.random().toString(36).slice(2, 7)),
+        username: gen.username,
+        email: gen.email,
+        lock: gen.lock,
+        license: gen.license,
+        expiresAt: gen.expiresAt,
+        daysValid: gen.daysValid,
+        note: note.trim(),
+        createdAt: editId ? (records.find(x => x.id === editId) || {}).createdAt || new Date().toISOString() : new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      }
+
+      const idx = records.findIndex(x => x.id === row.id)
+      if (idx >= 0) records[idx] = row
+      else records.unshift(row)
+      saveRecords(records)
+
+      document.getElementById('lock').value = gen.lock
+      document.getElementById('editId').value = ''
+      document.getElementById('submitBtn').textContent = 'تولید و ذخیره'
+      toast(editId ? 'بروزرسانی شد' : 'ذخیره شد')
+      render()
+    }
+
+    document.getElementById('resetBtn').onclick = () => {
+      document.getElementById('form').reset()
+      document.getElementById('editId').value = ''
+      document.getElementById('days').value = '365'
+      document.getElementById('submitBtn').textContent = 'تولید و ذخیره'
+    }
+
+    document.getElementById('list').onclick = async (e) => {
+      const btn = e.target.closest('button[data-act]')
+      if (!btn) return
+      const tr = btn.closest('tr')
+      const id = tr && tr.getAttribute('data-id')
+      if (!id) return
+      const records = loadRecords()
+      const row = records.find(x => x.id === id)
+      if (!row) return
+      const act = btn.getAttribute('data-act')
+      if (act === 'del') {
+        if (!confirm('حذف این لایسنس؟')) return
+        saveRecords(records.filter(x => x.id !== id))
+        toast('حذف شد')
+        render()
+      } else if (act === 'copy') {
+        const text = 'Username: ' + row.username + '\nEmail: ' + row.email +
+          '\nLock: ' + row.lock + '\nExpires: ' + row.expiresAt +
+          '\nLicense:\n' + row.license
+        await navigator.clipboard.writeText(text)
+        toast('کپی شد')
+      } else if (act === 'edit') {
+        document.getElementById('editId').value = row.id
+        document.getElementById('username').value = row.username
+        document.getElementById('email').value = row.email
+        document.getElementById('lock').value = row.lock
+        document.getElementById('days').value = row.daysValid || 365
+        document.getElementById('note').value = row.note || ''
+        document.getElementById('submitBtn').textContent = 'بازتولید و بروزرسانی'
+        window.scrollTo({ top: 0, behavior: 'smooth' })
+      }
+    }
+
+    document.getElementById('exportBtn').onclick = () => {
+      const blob = new Blob([JSON.stringify(loadRecords(), null, 2)], { type: 'application/json' })
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = 'te-ig-licenses.json'
+      a.click()
+    }
+
+    render()
+  </script>
+</body>
+</html>
