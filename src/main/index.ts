@@ -7,10 +7,12 @@ const store = new Store({
   defaults: {
     memory: '',
     autoReplyEnabled: false,
-    replyDelayMs: 2500,
     autoReplyDms: true,
     autoReplyComments: true,
     autoReplyNotifications: true,
+    delayDmsMs: 2500,
+    delayCommentsMs: 3000,
+    delayNotificationsMs: 3000,
     replyOwnPostComments: true,
     replyMentions: true,
     keywordRulesEnabled: true,
