@@ -1,5 +1,6 @@
 /**
  * Coordinated Logic + Memory reply engine.
+ * Priority: strict logic match → intent handlers → relevant memory → safe fallback.
  */
 
 export interface IncomingMessage {
@@ -15,7 +16,7 @@ export interface ReplyResult {
 }
 
 const GREETINGS = ['سلام', 'salam', 'hi', 'hello', 'درود', 'هی', 'hey']
-const THANKS_KEYS = ['ممنون', 'مرسی', 'تشکر', 'thanks', 'thank', 'دمت']
+const THANKS_KEYS = ['ممنون', 'مرسی', 'تشکر', 'thanks', 'thank']
 const NAME_KEYS = ['اسمت', 'اسم شما', 'اسمتون', 'کی هستی', 'your name', 'نامت', 'اسمت چیه']
 const HOW_ARE_YOU = [
   'حالت',
@@ -26,6 +27,22 @@ const HOW_ARE_YOU = [
   'how are you',
   'how r u',
   "what's up"
+]
+const WORK_KEYS = [
+  'چی کار',
+  'چیکار',
+  'چه کار',
+  'چکار',
+  'مشغول',
+  'کاری',
+  'چه می‌کنی',
+  'چه ميکني',
+  'چه میکنی',
+  'داری می کنی',
+  'داری میکنی',
+  'what are you doing',
+  'what do you do',
+  'doing'
 ]
 const PRICE_KEYS = ['قیمت', 'چنده', 'چند', 'price', 'هزینه', 'چقدر']
 const POST_KEYS = [
@@ -47,7 +64,7 @@ function normalize(s: string): string {
   return s
     .trim()
     .toLowerCase()
-    .replace(/[؟?!.،,\[\]]/g, ' ')
+    .replace(/[؟?!.،,\[\](){}«»"']/g, ' ')
     .replace(/\s+/g, ' ')
 }
 
@@ -73,6 +90,11 @@ export function parseLogicRules(logic: string): LogicRule[] {
   for (const line of linesOf(logic)) {
     if (line.startsWith('#') || line.startsWith('//')) continue
 
+    // pure style lines (not if/then)
+    if (/خودمونی|دوستانه|گرم برخورد|مودب|رسمی/i.test(line) && !/اگر|آنگاه|if\s|then/i.test(line)) {
+      continue
+    }
+
     let m =
       line.match(/^اگر\s+(.+?)\s+(?:آنگاه|آن\s*گاه|پس|→|->|:)\s*(.+)$/i) ||
       line.match(/^if\s+(.+?)\s+then\s+(.+)$/i) ||
@@ -85,21 +107,32 @@ export function parseLogicRules(logic: string): LogicRule[] {
       continue
     }
 
-    // lines that mention react / heart without formal syntax
+    // lines that mention react / heart WITHOUT formal syntax — only as post rules
     if (/react|ری.?اکت|قلب|heart|لایک/i.test(line) && /پست|attachment|فرستاد|media/i.test(line)) {
       rules.push({
         raw: line,
-        condition: 'پست فرستاد attachment',
+        condition: 'پست فرستاد attachment shared_post',
         action: line
       })
       continue
     }
-
-    if (line.length <= 80 && !/خودمونی|دوستانه|گرم برخورد/i.test(line)) {
-      rules.push({ raw: line, condition: line, action: 'از حافظه جواب بده' })
-    }
   }
   return rules
+}
+
+function isPostCondition(condition: string): boolean {
+  const c = normalize(condition)
+  return POST_KEYS.some((k) => c.includes(normalize(k)))
+}
+
+function isPostLikeIncoming(incoming: string): boolean {
+  const q = normalize(incoming)
+  if (!q) return false
+  // strong signals only — avoid false positive on normal chat
+  if (q.includes('shared_post') || q.includes('attachment') || q.includes('sent an attachment')) return true
+  if (/\b(reel|photo|video|sticker)\b/i.test(incoming)) return true
+  if (/(فرستاد(ه|ی)?\s*(پست|عکس|ریلز|ویدیو|مدیا))|(پست\s*فرستاد)/.test(q)) return true
+  return false
 }
 
 function conditionMatches(condition: string, incoming: string): boolean {
@@ -107,9 +140,14 @@ function conditionMatches(condition: string, incoming: string): boolean {
   const q = normalize(incoming)
   if (!c || !q) return false
 
+  // Post rules must only match real post/attachment messages
+  if (isPostCondition(c)) {
+    return isPostLikeIncoming(incoming)
+  }
+
   const checks: Array<{ keys: string[]; aliases: string[] }> = [
     { keys: ['حال', 'احوال', 'خوبی', 'چطوری'], aliases: HOW_ARE_YOU },
-    { keys: POST_KEYS, aliases: POST_KEYS },
+    { keys: ['کار', 'مشغول', 'چیکار'], aliases: WORK_KEYS },
     { keys: ['قیمت', 'چنده', 'هزینه'], aliases: PRICE_KEYS },
     { keys: ['سلام', 'احوالپرسی'], aliases: GREETINGS },
     { keys: ['اسم', 'کی هستی'], aliases: NAME_KEYS },
@@ -148,7 +186,11 @@ function conditionMatches(condition: string, incoming: string): boolean {
     'if',
     'form',
     'sender',
-    'with'
+    'with',
+    'بودن',
+    'باشه',
+    'بکن',
+    'کن'
   ])
   const words = c.split(' ').filter((w) => w.length > 2 && !stop.has(w))
   if (!words.length) return false
@@ -156,7 +198,9 @@ function conditionMatches(condition: string, incoming: string): boolean {
   for (const w of words) {
     if (q.includes(w)) hits++
   }
-  return words.length <= 3 ? hits >= 1 : hits >= 2
+  // stricter: need majority of condition words
+  const need = words.length <= 2 ? words.length : Math.ceil(words.length * 0.6)
+  return hits >= need
 }
 
 function findNameLine(memoryLines: string[]): string | null {
@@ -170,32 +214,41 @@ function findNameLine(memoryLines: string[]): string | null {
   return null
 }
 
+function isWorkQuestion(incoming: string): boolean {
+  const q = normalize(incoming)
+  return WORK_KEYS.some((k) => q.includes(normalize(k))) || /چی\s*کار|چه\s*کار|چیکار/.test(q)
+}
+
 function relevantMemory(memory: string, incoming: string): string[] {
   const lines = linesOf(memory)
   if (!lines.length) return []
   const q = normalize(incoming)
   const words = q.split(' ').filter((w) => w.length > 1)
+
+  const workQ = isWorkQuestion(incoming)
+
   const scored = lines.map((line) => {
     const ln = normalize(line)
     let score = 0
     for (const w of words) if (ln.includes(w)) score += 2
-    if (PRICE_KEYS.some((k) => q.includes(k)) && PRICE_KEYS.some((k) => ln.includes(k))) score += 4
+
+    if (PRICE_KEYS.some((k) => q.includes(k)) && PRICE_KEYS.some((k) => ln.includes(k))) score += 5
+
+    // work intent → prefer memory about کار / سعی / مشغول / پروژه
+    if (workQ) {
+      if (/کار|سعی|مشغول|پروژه|انجام|می‌کنم|ميکنم|میکنم/.test(ln)) score += 6
+    }
+
+    if (NAME_KEYS.some((k) => q.includes(normalize(k))) && (/^من\s|اسم|هستم/.test(ln))) score += 5
+
     return { line, score }
   })
+
   return scored
     .filter((x) => x.score > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, 3)
     .map((x) => x.line)
-}
-
-function isPostLikeIncoming(incoming: string): boolean {
-  const q = normalize(incoming)
-  return (
-    q.includes('shared_post') ||
-    q.includes('attachment') ||
-    POST_KEYS.some((k) => q.includes(normalize(k)))
-  )
 }
 
 function applyActionTemplate(
@@ -236,8 +289,11 @@ function applyActionTemplate(
 
   // Pure react action on post — short warm text optional
   if (actions.includes('react_heart') || actions.includes('like_shared')) {
-    const warm = pick(['عالی بود 🔥', 'دمت گرم ✨', '👏 عالیه', 'خیلی قشنگ بود ❤️'])
-    return { text: warm, actions }
+    // only if incoming really is a post; otherwise fall through to memory
+    if (isPostLikeIncoming(incoming)) {
+      const warm = pick(['عالی بود 🔥', 'دمت گرم ✨', '👏 عالیه', 'خیلی قشنگ بود ❤️'])
+      return { text: warm, actions }
+    }
   }
 
   if (/حافظه|memory|قیمت|بگو|جواب/.test(a)) {
@@ -249,13 +305,25 @@ function applyActionTemplate(
   if (action.length > 6 && !/^اگر\s/.test(action) && !/^(از حافظه)/.test(action)) {
     // skip pure English react instructions as reply text
     if (/react to message|heart stiker|heart sticker/i.test(action)) {
-      return {
-        text: pick(['عالی بود 🔥', 'دمت گرم ✨', '❤️']),
-        actions: actions.length ? actions : ['react_heart']
+      if (isPostLikeIncoming(incoming)) {
+        return {
+          text: pick(['عالی بود 🔥', 'دمت گرم ✨', '❤️']),
+          actions: actions.length ? actions : ['react_heart']
+        }
       }
+      // not a post → ignore this action, use memory
+      const rel = relevantMemory(memory, incoming)
+      if (rel.length) return { text: rel.join('\n'), actions: ['none'] }
     }
     const rel = relevantMemory(memory, incoming)
-    if (rel.length) return { text: `${action}\n${rel[0]}`, actions: actions.length ? actions : ['none'] }
+    if (rel.length) return { text: `${rel[0]}`, actions: actions.length ? actions : ['none'] }
+    // don't dump raw English action text to user
+    if (/[a-zA-Z]{4,}/.test(action) && /react|heart|sticker|message|form|sender/i.test(action)) {
+      return {
+        text: mem[0] ? `${mem[0]}\nپیامتون رو دیدم ✅` : 'پیامتون رو دیدم ✅',
+        actions: actions.length ? actions : ['none']
+      }
+    }
     return { text: action, actions: actions.length ? actions : ['none'] }
   }
 
@@ -277,6 +345,7 @@ export function generateSmartReply(
   const memLines = linesOf(memory)
   const rules = parseLogicRules(logic)
 
+  // 1) Logic rules (strict)
   for (const rule of rules) {
     if (conditionMatches(rule.condition, text)) {
       const applied = applyActionTemplate(rule.action, memory, text)
@@ -288,12 +357,27 @@ export function generateSmartReply(
     }
   }
 
-  // Built-in: shared post without explicit rule still hearts if logic mentions react globally
+  // 2) Built-in: shared post without explicit rule still hearts if logic mentions react globally
   if (isPostLikeIncoming(text)) {
     const reactRule = rules.find((r) => /react|قلب|heart|لایک|like/i.test(r.action))
     if (reactRule) {
       const applied = applyActionTemplate(reactRule.action, memory, text)
       return { ...applied, matchedLogic: reactRule.raw }
+    }
+  }
+
+  // 3) Work / what are you doing → memory about work first
+  if (isWorkQuestion(text)) {
+    const rel = relevantMemory(memory, text)
+    if (rel.length) {
+      return {
+        text: pick([
+          rel.join('\n'),
+          `${rel[0]} 🌿`,
+          `راستش ${rel[0]}`
+        ]),
+        actions: ['none']
+      }
     }
   }
 
