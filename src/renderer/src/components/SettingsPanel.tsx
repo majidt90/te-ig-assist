@@ -13,10 +13,11 @@ import {
   Zap,
   Inbox,
   UserPlus,
-  GitBranch
+  GitBranch,
+  ListFilter
 } from 'lucide-react'
 import { cn } from '../lib/utils'
-import type { KeywordRule } from '../lib/types'
+import type { DmListMode, KeywordRule } from '../lib/types'
 
 interface SettingsPanelProps {
   activeTab: 'settings' | 'memory' | 'rules'
@@ -113,6 +114,8 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
   const [walkUnreadDms, setWalkUnreadDms] = useState(true)
   const [acceptFollowRequests, setAcceptFollowRequests] = useState(false)
   const [followBack, setFollowBack] = useState(false)
+  const [dmListMode, setDmListMode] = useState<DmListMode>('off')
+  const [dmUserListText, setDmUserListText] = useState('')
   const [rules, setRules] = useState<KeywordRule[]>([])
   const [isSaving, setIsSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -136,6 +139,8 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
         'walkUnreadDms',
         'acceptFollowRequests',
         'followBack',
+        'dmListMode',
+        'dmUserList',
         'keywordRules'
       ] as const
       const vals = await Promise.all(keys.map((k) => window.api.getStore(k)))
@@ -154,9 +159,21 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
       if (typeof map.walkUnreadDms === 'boolean') setWalkUnreadDms(map.walkUnreadDms)
       if (typeof map.acceptFollowRequests === 'boolean') setAcceptFollowRequests(map.acceptFollowRequests)
       if (typeof map.followBack === 'boolean') setFollowBack(map.followBack)
+      if (map.dmListMode === 'whitelist' || map.dmListMode === 'blacklist' || map.dmListMode === 'off') {
+        setDmListMode(map.dmListMode)
+      }
+      if (Array.isArray(map.dmUserList)) {
+        setDmUserListText((map.dmUserList as string[]).join('\n'))
+      }
       if (Array.isArray(map.keywordRules)) setRules(map.keywordRules as KeywordRule[])
     })()
   }, [])
+
+  const parseUserList = (text: string): string[] =>
+    text
+      .split(/[\n,،]+/)
+      .map((s) => s.trim().replace(/^@/, ''))
+      .filter(Boolean)
 
   const handleSaveMemory = async () => {
     setIsSaving(true)
@@ -180,6 +197,8 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
     await window.api.setStore('walkUnreadDms', walkUnreadDms)
     await window.api.setStore('acceptFollowRequests', acceptFollowRequests)
     await window.api.setStore('followBack', followBack)
+    await window.api.setStore('dmListMode', dmListMode)
+    await window.api.setStore('dmUserList', parseUserList(dmUserListText))
     setSettingsSaved(true)
     setTimeout(() => setSettingsSaved(false), 2000)
   }
@@ -260,6 +279,54 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
                 label="پیمایش فقط unread"
                 desc="فقط چت‌هایی که پیام خوانده‌نشده دارند"
               />
+
+              <div className="rounded-xl border border-[hsl(var(--border)/0.7)] bg-[hsl(var(--secondary)/0.35)] p-3">
+                <div className="mb-2 flex items-center gap-1.5 text-[11px] font-medium">
+                  <ListFilter className="h-3.5 w-3.5 text-amber-400" />
+                  فیلتر کاربران دایرکت
+                </div>
+                <div className="mb-2 flex flex-wrap gap-1.5">
+                  {(
+                    [
+                      { id: 'off' as const, label: 'خاموش' },
+                      { id: 'whitelist' as const, label: 'وایت‌لیست' },
+                      { id: 'blacklist' as const, label: 'بلک‌لیست' }
+                    ] as const
+                  ).map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => setDmListMode(opt.id)}
+                      className={cn(
+                        'rounded-full px-2.5 py-1 text-[11px] transition',
+                        dmListMode === opt.id
+                          ? 'bg-[hsl(var(--primary)/0.25)] text-[hsl(var(--primary))] ring-1 ring-[hsl(var(--primary)/0.4)]'
+                          : 'bg-black/20 text-[hsl(var(--muted-foreground))] hover:bg-black/30'
+                      )}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+                {dmListMode !== 'off' && (
+                  <>
+                    <textarea
+                      value={dmUserListText}
+                      onChange={(e) => setDmUserListText(e.target.value)}
+                      className="input-field min-h-[88px] resize-none font-mono text-[12px]"
+                      dir="ltr"
+                      placeholder={'user1\nuser2\n@user3'}
+                    />
+                    <p className="mt-1.5 text-[10px] leading-relaxed text-[hsl(var(--muted-foreground))]">
+                      {dmListMode === 'whitelist'
+                        ? 'فقط به همین یوزرنیم‌ها پاسخ داده می‌شود.'
+                        : 'به این یوزرنیم‌ها پاسخ داده نمی‌شود.'}
+                      {' '}
+                      هر خط یک یوزرنیم (بدون یا با @).
+                    </p>
+                  </>
+                )}
+              </div>
             </section>
 
             <section className="space-y-2">
@@ -371,15 +438,7 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
               <div className="text-[11px] leading-relaxed text-emerald-100/80">
                 <p className="mb-1 font-medium text-emerald-200/90">فرمت پیشنهادی هر خط:</p>
                 <p>اگر [شرط] آنگاه [عمل]</p>
-                <p className="mt-1 text-white/50">
-                  منطق تصمیم می‌گیرد چه واکنشی باشد؛ حافظه محتوای واقعی (اسم، قیمت، …) را می‌دهد.
-                </p>
               </div>
-            </div>
-
-            <div className="card flex gap-2 text-[11px] text-[hsl(var(--muted-foreground))]">
-              <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sky-400" />
-              <p>هر دو بخش با یک دکمه ذخیره می‌شوند و با هم در موتور پاسخ استفاده می‌شوند.</p>
             </div>
           </motion.div>
         )}
@@ -460,7 +519,7 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
             </button>
             <div className="flex gap-2 rounded-xl border border-amber-500/15 bg-amber-500/[0.06] px-3 py-2.5">
               <AtSign className="h-3.5 w-3.5 shrink-0 text-amber-400" />
-              <p className="text-[11px] text-amber-100/70">برای رفتار عمومی از تب حافظه → منطق استفاده کنید.</p>
+              <p className="text-[11px] text-amber-100/70">برای فیلتر یوزر دایرکت از تب تنظیمات استفاده کنید.</p>
             </div>
           </motion.div>
         )}
