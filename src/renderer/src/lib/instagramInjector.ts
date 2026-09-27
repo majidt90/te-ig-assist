@@ -1,5 +1,5 @@
 /**
- * Instagram injector — unread-only, force scan, peer username on DM events.
+ * Instagram injector — unread DM scan, attachment detect, heart react.
  */
 
 export const INJECTOR_SOURCE = `
@@ -11,7 +11,7 @@ export const INJECTOR_SOURCE = `
   var lastSendAt = 0;
   var MIN_SEND_GAP_MS = 4000;
   var lastSentText = '';
-  var lastScanInfo = { path: '', dmNodes: 0, queued: 0, thread: false, method: '', peer: '' };
+  var lastScanInfo = { path: '', dmNodes: 0, queued: 0, thread: false, method: '', peer: '', hasAttachment: false };
 
   function path() { return location.pathname || ''; }
   function isDirectPage() { return /\\/direct\\//i.test(path()); }
@@ -35,9 +35,8 @@ export const INJECTOR_SOURCE = `
     if (SEEN.size > 1500) SEEN.delete(SEEN.values().next().value);
   }
 
-  /** Peer username for open DM thread */
   function getThreadUsername() {
-    var blocked = /^(p|reel|stories|direct|explore|accounts|inbox|t|reels|stories|about|legal)$/i;
+    var blocked = /^(p|reel|stories|direct|explore|accounts|inbox|t|reels|about|legal)$/i;
     var scopes = [
       document.querySelector('div[role="main"] header'),
       document.querySelector('section header'),
@@ -53,12 +52,11 @@ export const INJECTOR_SOURCE = `
         if (m && !blocked.test(m[1])) return m[1];
       }
     }
-    // fallback: any profile link near top of main
     var all = document.querySelectorAll('div[role="main"] a[href^="/"]');
     for (var j = 0; j < Math.min(all.length, 20); j++) {
       try {
         var r = all[j].getBoundingClientRect();
-        if (r.top > 120) continue;
+        if (r.top > 140) continue;
         var h = all[j].getAttribute('href') || '';
         var m2 = h.match(/^\\/([A-Za-z0-9._]+)\\/?$/);
         if (m2 && !blocked.test(m2[1])) return m2[1];
@@ -69,9 +67,7 @@ export const INJECTOR_SOURCE = `
 
   function usernameFromPreview(preview) {
     var t = (preview || '').trim();
-    // first token often username / display
-    var first = t.split(/\\s+/)[0] || '';
-    first = first.replace(/^@/, '');
+    var first = (t.split(/\\s+/)[0] || '').replace(/^@/, '');
     if (/^[A-Za-z0-9._]{2,30}$/.test(first)) return first;
     return '';
   }
@@ -81,9 +77,29 @@ export const INJECTOR_SOURCE = `
       var rect = el.getBoundingClientRect();
       var vw = window.innerWidth || 800;
       var mid = rect.left + rect.width / 2;
-      if (mid > vw * 0.56) return true;
-      if (mid < vw * 0.44) return false;
+      if (mid > vw * 0.55) return true;
+      if (mid < vw * 0.45) return false;
     } catch (e) {}
+    return false;
+  }
+
+  function detectAttachmentInThread() {
+    // shared post cards, images in message area
+    var main = document.querySelector('div[role="main"]') || document.body;
+    if (!main) return false;
+    if (main.querySelector('a[href*="/p/"], a[href*="/reel/"]')) return true;
+    if (main.querySelector('img[src*="instagram"], img[src*="cdninstagram"]')) {
+      // many avatars — require size
+      var imgs = main.querySelectorAll('img');
+      for (var i = 0; i < Math.min(imgs.length, 40); i++) {
+        try {
+          var r = imgs[i].getBoundingClientRect();
+          if (r.width > 120 && r.height > 120 && r.top > 80) return true;
+        } catch (e) {}
+      }
+    }
+    var t = (main.innerText || '');
+    if (/sent an attachment|shared a post|shared a reel|یک پست|پیوست/i.test(t)) return true;
     return false;
   }
 
@@ -114,8 +130,9 @@ export const INJECTOR_SOURCE = `
     if (isYouSentPreview(preview) && !/\\d+\\s*new message/i.test(preview) && !/Unread/i.test(preview)) {
       return false;
     }
-    if (/\\d+\\s*new message|Unread|خوانده\s*نشده|نخوانده/i.test(preview)) return true;
+    // blue dot alone is enough (e.g. Bizhannouri with attachment)
     if (hasBlueUnreadIndicator(row)) return true;
+    if (/\\d+\\s*new message|Unread|خوانده\s*نشده|نخوانده/i.test(preview)) return true;
     var aria = row.getAttribute('aria-label') || '';
     if (/unread|خوانده|نخوانده|new message/i.test(aria)) return true;
     try {
@@ -125,7 +142,7 @@ export const INJECTOR_SOURCE = `
         var fw = window.getComputedStyle(spans[s]).fontWeight || '';
         if (parseInt(fw, 10) >= 600 || fw === 'bold') boldCount++;
       }
-      if (boldCount >= 2) return true;
+      if (boldCount >= 2 && !isYouSentPreview(preview)) return true;
     } catch (e) {}
     return false;
   }
@@ -138,17 +155,21 @@ export const INJECTOR_SOURCE = `
       seenEl.add(el);
       var text = (el.innerText || el.textContent || '').trim();
       if (!text || text.length < 1 || text.length > 2000) return;
-      if (/^(Send|ارسال|Like|Seen|Active|Message|Enter|Online)/i.test(text)) return;
+      if (/^(Send|ارسال|Like|Seen|Active now|Message|Enter|Online|View profile)/i.test(text)) return;
       if (/^[0-9]{1,2}:[0-9]{2}/.test(text) && text.length < 14) return;
       if (lastSentText && text === lastSentText) return;
+      // skip huge chrome blocks
+      if (text.length > 400 && /instagram|meta/i.test(text)) return;
       out.push({ el: el, text: text });
     }
     var selectors = [
       'div[role="main"] div[dir="auto"]',
+      'div[role="main"] span[dir="auto"]',
       'div[role="list"] div[dir="auto"]',
       'div[role="row"] div[dir="auto"]',
       'main div[dir="auto"]',
-      'div[role="main"] span[dir="auto"]'
+      'div[role="main"] div[role="button"] div',
+      'div[role="main"] li div'
     ];
     for (var s = 0; s < selectors.length; s++) {
       var list = document.querySelectorAll(selectors[s]);
@@ -212,15 +233,24 @@ export const INJECTOR_SOURCE = `
 
   function scanDms(force) {
     if (!isDirectPage() && !hasCompose()) {
-      lastScanInfo = { path: path(), dmNodes: 0, queued: 0, thread: false, method: 'skip', peer: '' };
+      lastScanInfo = { path: path(), dmNodes: 0, queued: 0, thread: false, method: 'skip', peer: '', hasAttachment: false };
       return;
     }
     if (isInbox() && !hasCompose()) {
-      lastScanInfo = { path: path(), dmNodes: 0, queued: 0, thread: false, method: 'inbox_only', peer: '' };
+      lastScanInfo = { path: path(), dmNodes: 0, queued: 0, thread: false, method: 'inbox_only', peer: '', hasAttachment: false };
       return;
     }
     var nodes = collectDmCandidates();
-    lastScanInfo = { path: path(), dmNodes: nodes.length, queued: 0, thread: true, method: force ? 'force' : 'tail', peer: '' };
+    var hasAtt = detectAttachmentInThread();
+    lastScanInfo = {
+      path: path(),
+      dmNodes: nodes.length,
+      queued: 0,
+      thread: true,
+      method: force ? 'force' : 'tail',
+      peer: '',
+      hasAttachment: hasAtt
+    };
     if (!nodes.length) return;
     lastScanInfo.queued = queueIncomingFromNodes(nodes, !!force);
   }
@@ -296,12 +326,12 @@ export const INJECTOR_SOURCE = `
       var row = a.closest('[role="button"]') || a.parentElement || a;
       if (!isUnreadRow(row)) continue;
       var preview = (row.innerText || '').replace(/\\s+/g, ' ').trim();
-      if (isYouSentPreview(preview) && !/\\d+\\s*new message/i.test(preview)) continue;
+      if (isYouSentPreview(preview) && !/\\d+\\s*new message/i.test(preview) && !hasBlueUnreadIndicator(row)) continue;
       seenHref[href] = true;
       rows.push({
         el: a,
         href: href,
-        preview: preview.slice(0, 100),
+        preview: preview.slice(0, 120),
         username: usernameFromPreview(preview)
       });
     }
@@ -313,13 +343,13 @@ export const INJECTOR_SOURCE = `
         var el = candidates[r];
         try {
           var rect = el.getBoundingClientRect();
-          if (rect.height < 40 || rect.height > 130) continue;
+          if (rect.height < 40 || rect.height > 140) continue;
           if (rect.left > (window.innerWidth || 800) * 0.55) continue;
         } catch (e) { continue; }
         if (!isUnreadRow(el)) continue;
         var prev = (el.innerText || '').replace(/\\s+/g, ' ').trim();
         if (isYouSentPreview(prev) && !/\\d+\\s*new message/i.test(prev)) continue;
-        rows.push({ el: el, href: '', preview: prev.slice(0, 100), username: usernameFromPreview(prev) });
+        rows.push({ el: el, href: '', preview: prev.slice(0, 120), username: usernameFromPreview(prev) });
       }
     }
     return rows;
@@ -394,9 +424,68 @@ export const INJECTOR_SOURCE = `
   window.__TE_IG_LIKE_SHARED__ = function () {
     var buttons = document.querySelectorAll('[aria-label="Like"], [aria-label="پسندیدن"], [aria-label*="Like"]');
     for (var i = 0; i < buttons.length; i++) {
-      try { buttons[i].click(); return { ok: true }; } catch (e) {}
+      try { buttons[i].click(); return { ok: true, via: 'like' }; } catch (e) {}
     }
     return { ok: false, reason: 'no_like_btn' };
+  };
+
+  /** Double-click last incoming bubble or click heart react */
+  window.__TE_IG_REACT_HEART__ = async function () {
+    var main = document.querySelector('div[role="main"]') || document.body;
+
+    // 1) existing heart / love react buttons
+    var labels = main.querySelectorAll('[aria-label], div[role="button"], button');
+    for (var i = 0; i < labels.length; i++) {
+      var al = (labels[i].getAttribute('aria-label') || labels[i].innerText || '').trim();
+      if (/^(Love|Heart|❤️|❤|قلب|واکنش|React)$/i.test(al) || /React with love/i.test(al)) {
+        try {
+          labels[i].click();
+          return { ok: true, via: 'aria' };
+        } catch (e) {}
+      }
+    }
+
+    // 2) double-click largest non-outgoing media / bubble in lower half
+    var targets = main.querySelectorAll('img, div[dir="auto"], div[role="button"]');
+    var best = null;
+    var bestArea = 0;
+    var vw = window.innerWidth || 800;
+    for (var t = 0; t < targets.length; t++) {
+      try {
+        var el = targets[t];
+        var r = el.getBoundingClientRect();
+        if (r.width < 80 || r.height < 40) continue;
+        if (r.top < 100) continue;
+        var mid = r.left + r.width / 2;
+        if (mid > vw * 0.55) continue; // skip outgoing side
+        var area = r.width * r.height;
+        if (area > bestArea) {
+          bestArea = area;
+          best = el;
+        }
+      } catch (e) {}
+    }
+    if (best) {
+      try {
+        best.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, view: window }));
+        await new Promise(function (r) { setTimeout(r, 400); });
+        // try pick heart from reaction tray
+        var tray = document.querySelectorAll('[aria-label], span, div[role="button"]');
+        for (var k = 0; k < tray.length; k++) {
+          var tx = (tray[k].getAttribute('aria-label') || tray[k].textContent || '').trim();
+          if (/❤|❤️|Love|Heart|قلب/.test(tx)) {
+            tray[k].click();
+            return { ok: true, via: 'dblclick_tray' };
+          }
+        }
+        return { ok: true, via: 'dblclick' };
+      } catch (e) {}
+    }
+
+    // 3) fallback like button on shared post
+    var like = window.__TE_IG_LIKE_SHARED__();
+    if (like && like.ok) return { ok: true, via: 'like_fallback' };
+    return { ok: false, reason: 'no_react_target' };
   };
 
   function fillAndSend(box, text) {
