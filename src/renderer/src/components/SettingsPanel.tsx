@@ -6,15 +6,13 @@ import {
   Info,
   CheckCircle2,
   Lightbulb,
-  Timer,
   MessageSquare,
   AtSign,
   Plus,
   Trash2,
   Zap,
   Inbox,
-  UserPlus,
-  Bell
+  UserPlus
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import type { KeywordRule } from '../lib/types'
@@ -57,8 +55,8 @@ function ToggleSwitch({
           'mt-0.5 flex h-5 w-9 shrink-0 items-center rounded-full px-0.5 transition-colors duration-200',
           checked ? 'justify-start bg-emerald-500' : 'justify-end bg-zinc-600'
         )}
-        aria-checked={checked}
         role="switch"
+        aria-checked={checked}
       >
         <span className="h-4 w-4 rounded-full bg-white shadow-sm" />
       </div>
@@ -70,12 +68,44 @@ function ToggleSwitch({
   )
 }
 
+function DelaySlider({
+  label,
+  valueSec,
+  onChange
+}: {
+  label: string
+  valueSec: number
+  onChange: (v: number) => void
+}): JSX.Element {
+  return (
+    <div className="rounded-lg border border-[hsl(var(--border)/0.5)] bg-black/20 px-3 py-2">
+      <div className="mb-1.5 flex items-center justify-between text-[11px]">
+        <span className="text-[hsl(var(--muted-foreground))]">{label}</span>
+        <span className="tabular-nums text-[hsl(var(--foreground))]">
+          {valueSec.toLocaleString('fa-IR')} ثانیه
+        </span>
+      </div>
+      <input
+        type="range"
+        min={1}
+        max={15}
+        step={0.5}
+        value={valueSec}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-[hsl(var(--muted))] accent-[hsl(var(--primary))]"
+      />
+    </div>
+  )
+}
+
 export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.Element {
   const [memory, setMemory] = useState('')
-  const [replyDelaySec, setReplyDelaySec] = useState(2.5)
   const [autoReplyDms, setAutoReplyDms] = useState(true)
   const [autoReplyComments, setAutoReplyComments] = useState(true)
   const [autoReplyNotifications, setAutoReplyNotifications] = useState(true)
+  const [delayDmsSec, setDelayDmsSec] = useState(2.5)
+  const [delayCommentsSec, setDelayCommentsSec] = useState(3)
+  const [delayNotificationsSec, setDelayNotificationsSec] = useState(3)
   const [replyOwnPostComments, setReplyOwnPostComments] = useState(true)
   const [replyMentions, setReplyMentions] = useState(true)
   const [keywordRulesEnabled, setKeywordRulesEnabled] = useState(true)
@@ -92,10 +122,12 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
     void (async () => {
       const keys = [
         'memory',
-        'replyDelayMs',
         'autoReplyDms',
         'autoReplyComments',
         'autoReplyNotifications',
+        'delayDmsMs',
+        'delayCommentsMs',
+        'delayNotificationsMs',
         'replyOwnPostComments',
         'replyMentions',
         'keywordRulesEnabled',
@@ -107,10 +139,12 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
       const vals = await Promise.all(keys.map((k) => window.api.getStore(k)))
       const map = Object.fromEntries(keys.map((k, i) => [k, vals[i]]))
       if (typeof map.memory === 'string') setMemory(map.memory)
-      if (typeof map.replyDelayMs === 'number') setReplyDelaySec(map.replyDelayMs / 1000)
       if (typeof map.autoReplyDms === 'boolean') setAutoReplyDms(map.autoReplyDms)
       if (typeof map.autoReplyComments === 'boolean') setAutoReplyComments(map.autoReplyComments)
       if (typeof map.autoReplyNotifications === 'boolean') setAutoReplyNotifications(map.autoReplyNotifications)
+      if (typeof map.delayDmsMs === 'number') setDelayDmsSec(map.delayDmsMs / 1000)
+      if (typeof map.delayCommentsMs === 'number') setDelayCommentsSec(map.delayCommentsMs / 1000)
+      if (typeof map.delayNotificationsMs === 'number') setDelayNotificationsSec(map.delayNotificationsMs / 1000)
       if (typeof map.replyOwnPostComments === 'boolean') setReplyOwnPostComments(map.replyOwnPostComments)
       if (typeof map.replyMentions === 'boolean') setReplyMentions(map.replyMentions)
       if (typeof map.keywordRulesEnabled === 'boolean') setKeywordRulesEnabled(map.keywordRulesEnabled)
@@ -130,10 +164,12 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
   }
 
   const handleSaveSettings = async () => {
-    await window.api.setStore('replyDelayMs', Math.round(replyDelaySec * 1000))
     await window.api.setStore('autoReplyDms', autoReplyDms)
     await window.api.setStore('autoReplyComments', autoReplyComments)
     await window.api.setStore('autoReplyNotifications', autoReplyNotifications)
+    await window.api.setStore('delayDmsMs', Math.round(delayDmsSec * 1000))
+    await window.api.setStore('delayCommentsMs', Math.round(delayCommentsSec * 1000))
+    await window.api.setStore('delayNotificationsMs', Math.round(delayNotificationsSec * 1000))
     await window.api.setStore('replyOwnPostComments', replyOwnPostComments)
     await window.api.setStore('replyMentions', replyMentions)
     await window.api.setStore('keywordRulesEnabled', keywordRulesEnabled)
@@ -164,50 +200,53 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
             exit={{ opacity: 0, y: -6 }}
             className="flex h-full flex-col gap-4 overflow-y-auto p-4"
           >
-            <section className="space-y-2">
-              <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
-                قابلیت‌های اصلی
+            <section className="space-y-3">
+              <h3 className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
+                قابلیت‌های اصلی + تأخیر اختصاصی
               </h3>
-              <ToggleSwitch
-                checked={autoReplyDms}
-                onChange={setAutoReplyDms}
-                label="پاسخ‌گویی دایرکت"
-                desc="پیام‌های Direct را می‌خواند و پاسخ می‌دهد."
-              />
-              <ToggleSwitch
-                checked={autoReplyComments}
-                onChange={setAutoReplyComments}
-                label="پاسخ‌گویی کامنت"
-                desc="کامنت‌های روی پست را پاسخ می‌دهد."
-              />
-              <ToggleSwitch
-                checked={autoReplyNotifications}
-                onChange={setAutoReplyNotifications}
-                label="پاسخ‌گویی نوتیفیکیشن"
-                desc="از صفحه فعالیت، منشن و کامنت را باز و پاسخ می‌دهد."
-              />
-            </section>
 
-            <section>
-              <h3 className="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
-                <Timer className="h-3.5 w-3.5 text-purple-400" />
-                تأخیر پاسخ
-              </h3>
-              <div className="card">
-                <div className="flex items-center gap-3">
-                  <input
-                    type="range"
-                    min={1}
-                    max={10}
-                    step={0.5}
-                    value={replyDelaySec}
-                    onChange={(e) => setReplyDelaySec(Number(e.target.value))}
-                    className="h-1.5 flex-1 cursor-pointer appearance-none rounded-full bg-[hsl(var(--muted))] accent-[hsl(var(--primary))]"
+              <div className="space-y-2">
+                <ToggleSwitch
+                  checked={autoReplyDms}
+                  onChange={setAutoReplyDms}
+                  label="پاسخ‌گویی دایرکت"
+                  desc="خواندن و پاسخ به Direct"
+                />
+                {autoReplyDms && (
+                  <DelaySlider label="تأخیر دایرکت" valueSec={delayDmsSec} onChange={setDelayDmsSec} />
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <ToggleSwitch
+                  checked={autoReplyComments}
+                  onChange={setAutoReplyComments}
+                  label="پاسخ‌گویی کامنت"
+                  desc="پاسخ به کامنت پست"
+                />
+                {autoReplyComments && (
+                  <DelaySlider
+                    label="تأخیر کامنت"
+                    valueSec={delayCommentsSec}
+                    onChange={setDelayCommentsSec}
                   />
-                  <span className="w-12 text-left text-xs tabular-nums">
-                    {replyDelaySec.toLocaleString('fa-IR')} ث
-                  </span>
-                </div>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <ToggleSwitch
+                  checked={autoReplyNotifications}
+                  onChange={setAutoReplyNotifications}
+                  label="پاسخ‌گویی نوتیفیکیشن"
+                  desc="منشن و کامنت از صفحه فعالیت"
+                />
+                {autoReplyNotifications && (
+                  <DelaySlider
+                    label="تأخیر نوتیفیکیشن"
+                    valueSec={delayNotificationsSec}
+                    onChange={setDelayNotificationsSec}
+                  />
+                )}
               </div>
             </section>
 
@@ -220,7 +259,7 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
                 checked={walkUnreadDms}
                 onChange={setWalkUnreadDms}
                 label="پیمایش خودکار گفتگوها"
-                desc="inbox را می‌گردد و گفتگوها را یکی‌یکی باز می‌کند."
+                desc="لیست inbox را یکی‌یکی باز می‌کند"
               />
             </section>
 
@@ -233,13 +272,13 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
                 checked={replyOwnPostComments}
                 onChange={setReplyOwnPostComments}
                 label="کامنت پست‌های خودم"
-                desc="روی صفحه پست خودتان."
+                desc="روی صفحه پست"
               />
               <ToggleSwitch
                 checked={replyMentions}
                 onChange={setReplyMentions}
-                label="منشن در کامنت"
-                desc="اگر منشن شدید."
+                label="منشن"
+                desc="اگر منشن شدید"
               />
             </section>
 
@@ -252,13 +291,13 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
                 checked={acceptFollowRequests}
                 onChange={setAcceptFollowRequests}
                 label="تأیید درخواست فالو"
-                desc="Confirm روی درخواست‌های معلّق."
+                desc="Confirm"
               />
               <ToggleSwitch
                 checked={followBack}
                 onChange={setFollowBack}
                 label="فالو بک"
-                desc="بعد از تأیید."
+                desc="بعد از تأیید"
               />
             </section>
 
@@ -272,8 +311,7 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
             <div className="card flex gap-2 text-[11px] text-[hsl(var(--muted-foreground))]">
               <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sky-400" />
               <p>
-                برای تست دایرکت: یک گفتگو را دستی باز کنید و لاگ «اسکن: X حباب» را ببینید. اگر حباب ۰ است، DOM
-                پیام را نمی‌بیند.
+                همه کارها (باز کردن چت، پاسخ، نوتیف) در یک صف زمانی مشترک اجرا می‌شوند تا تداخل نداشته باشند.
               </p>
             </div>
           </motion.div>

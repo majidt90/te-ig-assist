@@ -22,27 +22,15 @@ export default function InstagramPanel(): JSX.Element {
   }, [])
 
   const syncStore = useCallback(async () => {
-    const [
-      enabled,
-      memory,
-      delay,
-      dms,
-      comments,
-      notifs,
-      own,
-      mentions,
-      kwOn,
-      kwRules,
-      walk,
-      accept,
-      fb
-    ] = await Promise.all([
+    const vals = await Promise.all([
       window.api.getStore('autoReplyEnabled'),
       window.api.getStore('memory'),
-      window.api.getStore('replyDelayMs'),
       window.api.getStore('autoReplyDms'),
       window.api.getStore('autoReplyComments'),
       window.api.getStore('autoReplyNotifications'),
+      window.api.getStore('delayDmsMs'),
+      window.api.getStore('delayCommentsMs'),
+      window.api.getStore('delayNotificationsMs'),
       window.api.getStore('replyOwnPostComments'),
       window.api.getStore('replyMentions'),
       window.api.getStore('keywordRulesEnabled'),
@@ -51,9 +39,26 @@ export default function InstagramPanel(): JSX.Element {
       window.api.getStore('acceptFollowRequests'),
       window.api.getStore('followBack')
     ])
+    const [
+      enabled,
+      memory,
+      dms,
+      comments,
+      notifs,
+      dDms,
+      dCmt,
+      dNotif,
+      own,
+      mentions,
+      kwOn,
+      kwRules,
+      walk,
+      accept,
+      fb
+    ] = vals
+
     autoReplyController.setEnabled(Boolean(enabled))
     autoReplyController.setMemory(typeof memory === 'string' ? memory : '')
-    if (typeof delay === 'number') autoReplyController.setReplyDelay(delay)
     autoReplyController.setFlags({
       autoReplyDms: dms !== false,
       autoReplyComments: comments !== false,
@@ -64,6 +69,11 @@ export default function InstagramPanel(): JSX.Element {
       walkUnreadDms: walk !== false,
       acceptFollowRequests: Boolean(accept),
       followBack: Boolean(fb)
+    })
+    autoReplyController.setDelays({
+      delayDmsMs: typeof dDms === 'number' ? dDms : 2500,
+      delayCommentsMs: typeof dCmt === 'number' ? dCmt : 3000,
+      delayNotificationsMs: typeof dNotif === 'number' ? dNotif : 3000
     })
     if (Array.isArray(kwRules)) autoReplyController.setKeywordRules(kwRules as KeywordRule[])
   }, [])
@@ -173,7 +183,7 @@ export default function InstagramPanel(): JSX.Element {
               {activities.length === 0 ? (
                 <p className="text-[11px] text-white/35">منتظر رویداد…</p>
               ) : (
-                activities.slice(0, 20).map((a) => (
+                activities.slice(0, 22).map((a) => (
                   <div key={a.id} className="flex gap-2 text-[11px]">
                     <span className="shrink-0 tabular-nums text-white/30">
                       {new Date(a.at).toLocaleTimeString('fa-IR', {
