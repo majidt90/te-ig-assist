@@ -9,11 +9,18 @@ import {
   ChevronDown,
   ChevronUp,
   Copy,
-  Check
+  Check,
+  Send,
+  X,
+  Pencil
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { INJECTOR_SOURCE } from '../lib/instagramInjector'
-import { autoReplyController, type ActivityItem } from '../lib/autoReplyController'
+import {
+  autoReplyController,
+  type ActivityItem,
+  type ApprovalItem
+} from '../lib/autoReplyController'
 import type { DmListMode, KeywordRule } from '../lib/types'
 
 export default function InstagramPanel(): JSX.Element {
@@ -22,9 +29,11 @@ export default function InstagramPanel(): JSX.Element {
   const [canGoBack, setCanGoBack] = useState(false)
   const [canGoForward, setCanGoForward] = useState(false)
   const [activities, setActivities] = useState<ActivityItem[]>([])
+  const [approvals, setApprovals] = useState<ApprovalItem[]>([])
   const [logOpen, setLogOpen] = useState(true)
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const [copiedAll, setCopiedAll] = useState(false)
+  const [editMap, setEditMap] = useState<Record<string, string>>({})
 
   const injectMonitor = useCallback(async () => {
     const wv = webviewRef.current
@@ -34,86 +43,97 @@ export default function InstagramPanel(): JSX.Element {
   }, [])
 
   const syncStore = useCallback(async () => {
-    const vals = await Promise.all([
-      window.api.getStore('autoReplyEnabled'),
-      window.api.getStore('memory'),
-      window.api.getStore('logic'),
-      window.api.getStore('autoReplyDms'),
-      window.api.getStore('autoReplyComments'),
-      window.api.getStore('autoReplyNotifications'),
-      window.api.getStore('delayDmsMs'),
-      window.api.getStore('delayCommentsMs'),
-      window.api.getStore('delayNotificationsMs'),
-      window.api.getStore('replyOwnPostComments'),
-      window.api.getStore('replyMentions'),
-      window.api.getStore('keywordRulesEnabled'),
-      window.api.getStore('keywordRules'),
-      window.api.getStore('walkUnreadDms'),
-      window.api.getStore('acceptFollowRequests'),
-      window.api.getStore('followBack'),
-      window.api.getStore('autoCycle'),
-      window.api.getStore('cycleIntervalMs'),
-      window.api.getStore('dmListMode'),
-      window.api.getStore('dmUserList')
-    ])
-    const [
-      enabled,
-      memory,
-      logic,
-      dms,
-      comments,
-      notifs,
-      dDms,
-      dCmt,
-      dNotif,
-      own,
-      mentions,
-      kwOn,
-      kwRules,
-      walk,
-      accept,
-      fb,
-      autoCycle,
-      cycleMs,
-      dmMode,
-      dmUsers
-    ] = vals
+    const keys = [
+      'autoReplyEnabled',
+      'memory',
+      'logic',
+      'autoReplyDms',
+      'autoReplyComments',
+      'autoReplyNotifications',
+      'delayDmsMs',
+      'delayCommentsMs',
+      'delayNotificationsMs',
+      'replyOwnPostComments',
+      'replyMentions',
+      'keywordRulesEnabled',
+      'keywordRules',
+      'walkUnreadDms',
+      'acceptFollowRequests',
+      'followBack',
+      'autoCycle',
+      'cycleIntervalMs',
+      'dmListMode',
+      'dmUserList',
+      'replyAllInThread',
+      'previewBeforeSend',
+      'workingHoursEnabled',
+      'workStartHour',
+      'workEndHour',
+      'dailyLimitEnabled',
+      'dailyLimitDm',
+      'dailyLimitComment',
+      'dailyStats'
+    ] as const
+    const vals = await Promise.all(keys.map((k) => window.api.getStore(k)))
+    const g = Object.fromEntries(keys.map((k, i) => [k, vals[i]])) as Record<string, unknown>
 
-    autoReplyController.setEnabled(Boolean(enabled))
-    autoReplyController.setMemory(typeof memory === 'string' ? memory : '')
-    autoReplyController.setLogic(typeof logic === 'string' ? logic : '')
-    autoReplyController.setAutoCycle(autoCycle !== false)
-    if (typeof cycleMs === 'number') autoReplyController.setCycleIntervalMs(cycleMs)
+    autoReplyController.setEnabled(Boolean(g.autoReplyEnabled))
+    autoReplyController.setMemory(typeof g.memory === 'string' ? g.memory : '')
+    autoReplyController.setLogic(typeof g.logic === 'string' ? g.logic : '')
+    autoReplyController.setAutoCycle(g.autoCycle !== false)
+    if (typeof g.cycleIntervalMs === 'number') autoReplyController.setCycleIntervalMs(g.cycleIntervalMs)
     autoReplyController.setFlags({
-      autoReplyDms: dms !== false,
-      autoReplyComments: comments !== false,
-      autoReplyNotifications: notifs !== false,
-      replyOwnPostComments: own !== false,
-      replyMentions: mentions !== false,
-      keywordRulesEnabled: kwOn !== false,
-      walkUnreadDms: walk !== false,
-      acceptFollowRequests: Boolean(accept),
-      followBack: Boolean(fb)
+      autoReplyDms: g.autoReplyDms !== false,
+      autoReplyComments: g.autoReplyComments !== false,
+      autoReplyNotifications: g.autoReplyNotifications !== false,
+      replyOwnPostComments: g.replyOwnPostComments !== false,
+      replyMentions: g.replyMentions !== false,
+      keywordRulesEnabled: g.keywordRulesEnabled !== false,
+      walkUnreadDms: g.walkUnreadDms !== false,
+      acceptFollowRequests: Boolean(g.acceptFollowRequests),
+      followBack: Boolean(g.followBack),
+      replyAllInThread: g.replyAllInThread !== false,
+      previewBeforeSend: Boolean(g.previewBeforeSend)
     })
     autoReplyController.setDelays({
-      delayDmsMs: typeof dDms === 'number' ? dDms : 2500,
-      delayCommentsMs: typeof dCmt === 'number' ? dCmt : 3000,
-      delayNotificationsMs: typeof dNotif === 'number' ? dNotif : 3000
+      delayDmsMs: typeof g.delayDmsMs === 'number' ? g.delayDmsMs : 2500,
+      delayCommentsMs: typeof g.delayCommentsMs === 'number' ? g.delayCommentsMs : 3000,
+      delayNotificationsMs: typeof g.delayNotificationsMs === 'number' ? g.delayNotificationsMs : 3000
     })
     const mode: DmListMode =
-      dmMode === 'whitelist' || dmMode === 'blacklist' || dmMode === 'off' ? dmMode : 'off'
+      g.dmListMode === 'whitelist' || g.dmListMode === 'blacklist' || g.dmListMode === 'off'
+        ? g.dmListMode
+        : 'off'
     autoReplyController.setDmFilter({
       mode,
-      users: Array.isArray(dmUsers) ? (dmUsers as string[]) : []
+      users: Array.isArray(g.dmUserList) ? (g.dmUserList as string[]) : []
     })
-    if (Array.isArray(kwRules)) autoReplyController.setKeywordRules(kwRules as KeywordRule[])
+    autoReplyController.setSafety({
+      workingHoursEnabled: Boolean(g.workingHoursEnabled),
+      workStartHour: typeof g.workStartHour === 'number' ? g.workStartHour : 9,
+      workEndHour: typeof g.workEndHour === 'number' ? g.workEndHour : 22,
+      dailyLimitEnabled: Boolean(g.dailyLimitEnabled),
+      dailyLimitDm: typeof g.dailyLimitDm === 'number' ? g.dailyLimitDm : 50,
+      dailyLimitComment: typeof g.dailyLimitComment === 'number' ? g.dailyLimitComment : 30
+    })
+    if (g.dailyStats && typeof g.dailyStats === 'object') {
+      const s = g.dailyStats as { day?: string; dm?: number; comment?: number }
+      autoReplyController.setDailyStats({
+        day: s.day || '',
+        dm: s.dm || 0,
+        comment: s.comment || 0
+      })
+    }
+    if (Array.isArray(g.keywordRules)) autoReplyController.setKeywordRules(g.keywordRules as KeywordRule[])
   }, [])
 
   useEffect(() => {
     void syncStore()
     const unsub = autoReplyController.subscribe(setActivities)
+    const unsubA = autoReplyController.subscribeApprovals(setApprovals)
     return () => {
       unsub()
+      unsubA()
       autoReplyController.unbindWebview()
     }
   }, [syncStore])
@@ -168,18 +188,17 @@ export default function InstagramPanel(): JSX.Element {
       setCopiedId(a.id)
       setTimeout(() => setCopiedId(null), 1200)
     } catch {
-      /* ignore */
+      /* */
     }
   }
 
   const copyAll = async () => {
     try {
-      const text = activities.map(formatLine).join('\n')
-      await navigator.clipboard.writeText(text)
+      await navigator.clipboard.writeText(activities.map(formatLine).join('\n'))
       setCopiedAll(true)
       setTimeout(() => setCopiedAll(false), 1500)
     } catch {
-      /* ignore */
+      /* */
     }
   }
 
@@ -215,6 +234,11 @@ export default function InstagramPanel(): JSX.Element {
           </div>
         </div>
         <div className="flex items-center gap-1">
+          {approvals.length > 0 && (
+            <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] text-amber-300">
+              {approvals.length} تأیید
+            </span>
+          )}
           <button
             onClick={() => setLogOpen((v) => !v)}
             className={cn(
@@ -233,6 +257,64 @@ export default function InstagramPanel(): JSX.Element {
       </div>
 
       <AnimatePresence>
+        {approvals.length > 0 && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            className="border-b border-amber-500/20 bg-amber-500/10"
+          >
+            <div className="max-h-40 space-y-2 overflow-y-auto px-3 py-2">
+              {approvals.map((a) => (
+                <div key={a.id} className="rounded-lg border border-white/10 bg-black/40 p-2">
+                  <p className="text-[10px] text-white/40">
+                    {a.channel === 'dm' ? 'دایرکت' : 'کامنت'}
+                    {a.username ? ` · @${a.username}` : ''}
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-white/55">«{a.incoming.slice(0, 80)}»</p>
+                  <textarea
+                    className="mt-1 w-full resize-none rounded-md border border-white/10 bg-black/50 px-2 py-1 text-[11px] text-white"
+                    rows={2}
+                    value={editMap[a.id] ?? a.draft}
+                    onChange={(e) => setEditMap((m) => ({ ...m, [a.id]: e.target.value }))}
+                  />
+                  <div className="mt-1 flex gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        autoReplyController.approveReply(a.id, editMap[a.id] ?? a.draft)
+                        setEditMap((m) => {
+                          const n = { ...m }
+                          delete n[a.id]
+                          return n
+                        })
+                      }}
+                      className="flex items-center gap-1 rounded-md bg-emerald-500/20 px-2 py-1 text-[10px] text-emerald-300"
+                    >
+                      <Send className="h-3 w-3" />
+                      ارسال
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => autoReplyController.rejectReply(a.id)}
+                      className="flex items-center gap-1 rounded-md bg-red-500/15 px-2 py-1 text-[10px] text-red-300"
+                    >
+                      <X className="h-3 w-3" />
+                      رد
+                    </button>
+                    <span className="flex items-center gap-1 text-[10px] text-white/30">
+                      <Pencil className="h-3 w-3" />
+                      قابل ویرایش
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
         {logOpen && (
           <motion.div
             initial={{ height: 0, opacity: 0 }}
@@ -244,7 +326,7 @@ export default function InstagramPanel(): JSX.Element {
               <span className="text-[10px] text-white/35">{activities.length} ردیف (حداکثر ۲۰۰)</span>
               <button
                 onClick={() => void copyAll()}
-                className="flex items-center gap-1 rounded px-2 py-0.5 text-[10px] text-white/60 hover:bg-white/10 hover:text-white"
+                className="flex items-center gap-1 rounded px-2 py-0.5 text-[10px] text-white/60 hover:bg-white/10"
               >
                 {copiedAll ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
                 {copiedAll ? 'کپی شد' : 'کپی همه'}
@@ -269,8 +351,7 @@ export default function InstagramPanel(): JSX.Element {
                     <span className={cn('min-w-0 flex-1 text-[11px]', levelColor(a.level))}>{a.message}</span>
                     <button
                       onClick={() => void copyOne(a)}
-                      className="shrink-0 rounded p-0.5 text-white/20 opacity-0 group-hover:opacity-100 hover:text-white/70"
-                      title="کپی این خط"
+                      className="shrink-0 rounded p-0.5 text-white/20 opacity-0 group-hover:opacity-100"
                     >
                       {copiedId === a.id ? (
                         <Check className="h-3 w-3 text-emerald-400" />
