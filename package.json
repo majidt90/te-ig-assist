@@ -1,9 +1,9 @@
 {
   "name": "te-ig-assist",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Professional Instagram Assistant with auto-reply, internal browser, and smart memory",
   "main": "./out/main/index.js",
-  "author": "majidt90",
+  "author": "Majid Mahboubian · TERMIMAL",
   "license": "MIT",
   "private": true,
   "scripts": {
@@ -11,7 +11,8 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "postinstall": "electron-builder install-app-deps",
-    "build:win": "npm run build && electron-builder --win",
+    "build:win": "npm run build && electron-builder --win --x64",
+    "build:win:dir": "npm run build && electron-builder --win --x64 --dir",
     "build:mac": "npm run build && electron-builder --mac",
     "build:linux": "npm run build && electron-builder --linux",
     "typecheck": "tsc --noEmit -p tsconfig.web.json --composite false",
@@ -49,27 +50,44 @@
   "build": {
     "appId": "com.majidt90.te-ig-assist",
     "productName": "TE IG Assist",
+    "copyright": "Copyright © TERMIMAL",
     "directories": {
-      "output": "release"
+      "output": "release",
+      "buildResources": "resources"
     },
     "files": [
       "out/**/*",
       "package.json"
     ],
+    "asar": true,
     "win": {
       "target": [
-        "nsis"
-      ]
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ],
+      "artifactName": "${productName}-${version}-${os}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "TE IG Assist"
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable.exe"
     },
     "mac": {
-      "target": [
-        "dmg"
-      ]
+      "target": ["dmg"]
     },
     "linux": {
-      "target": [
-        "AppImage"
-      ]
+      "target": ["AppImage"]
     }
   }
 }
