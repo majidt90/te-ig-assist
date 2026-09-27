@@ -36,6 +36,9 @@ module.exports = {
       fontFamily: {
         sans: ['Vazirmatn', 'system-ui', 'sans-serif']
       },
+      height: {
+        13: '3.25rem'
+      },
       animation: {
         'fade-in': 'fadeIn 0.3s ease-out',
         'slide-in-right': 'slideInRight 0.3s ease-out',
@@ -52,7 +55,7 @@ module.exports = {
         },
         pulseSoft: {
           '0%, 100%': { opacity: '1' },
-          '50%': { opacity: '0.7' }
+          '50%': { opacity: '0.65' }
         }
       }
     }
