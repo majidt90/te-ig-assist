@@ -1,13 +1,9 @@
 /**
- * Instagram injector — conversation list by row index (not only href).
+ * Instagram injector — unread-only conversation listing.
  */
 
 export const INJECTOR_SOURCE = `
 (function () {
-  if (window.__TE_IG_ASSIST_INJECTED__ && window.__TE_IG_POLL__) {
-    // Already live — just refresh helpers if needed
-  }
-
   var SEEN = window.__TE_IG_SEEN__ || new Set();
   window.__TE_IG_SEEN__ = SEEN;
   var PENDING = window.__TE_IG_PENDING__ || [];
@@ -50,6 +46,41 @@ export const INJECTOR_SOURCE = `
     return false;
   }
 
+  function hasBlueUnreadIndicator(root) {
+    var nodes = root.querySelectorAll('div, span');
+    for (var i = 0; i < Math.min(nodes.length, 50); i++) {
+      var el = nodes[i];
+      try {
+        var st = window.getComputedStyle(el);
+        var bg = st.backgroundColor || '';
+        var w = parseFloat(st.width) || 0;
+        var h = parseFloat(st.height) || 0;
+        if (w >= 4 && w <= 16 && h >= 4 && h <= 16) {
+          if (/0,?\\s*149,?\\s*246|55,?\\s*151,?\\s*240|0,?\\s*55,?\\s*107/.test(bg)) return true;
+        }
+      } catch (e) {}
+    }
+    return false;
+  }
+
+  function isUnreadRow(row) {
+    if (!row) return false;
+    if (hasBlueUnreadIndicator(row)) return true;
+    var aria = (row.getAttribute('aria-label') || '') + ' ' + (row.getAttribute('aria-describedby') || '');
+    if (/unread|خوانده|نخوانده|new message/i.test(aria)) return true;
+    try {
+      var spans = row.querySelectorAll('span');
+      var boldCount = 0;
+      for (var s = 0; s < Math.min(spans.length, 15); s++) {
+        var fw = window.getComputedStyle(spans[s]).fontWeight || '';
+        if (parseInt(fw, 10) >= 600 || fw === 'bold') boldCount++;
+      }
+      // IG unread: name + preview often bold
+      if (boldCount >= 2) return true;
+    } catch (e) {}
+    return false;
+  }
+
   function collectDmCandidates() {
     var out = [];
     var seenEl = new WeakSet();
@@ -68,22 +99,11 @@ export const INJECTOR_SOURCE = `
       'div[role="list"] div[dir="auto"]',
       'div[role="row"] div[dir="auto"]',
       'main div[dir="auto"]',
-      'div[role="main"] span[dir="auto"]',
-      'div[role="row"] span[dir="auto"]'
+      'div[role="main"] span[dir="auto"]'
     ];
     for (var s = 0; s < selectors.length; s++) {
       var list = document.querySelectorAll(selectors[s]);
       for (var i = 0; i < list.length; i++) add(list[i]);
-    }
-    if (out.length < 2) {
-      var all = document.querySelectorAll('[dir="auto"]');
-      for (var j = 0; j < all.length; j++) {
-        try {
-          var r = all[j].getBoundingClientRect();
-          if (r.width < 20 || r.height < 10 || r.top < 80) continue;
-          add(all[j]);
-        } catch (e) {}
-      }
     }
     return out;
   }
@@ -113,7 +133,6 @@ export const INJECTOR_SOURCE = `
     var startIdx = lastOut >= 0 ? lastOut + 1 : Math.max(0, classified.length - 1);
     if (lastOut < 0) lastScanInfo.method = 'last_only';
 
-    var queuedAny = false;
     for (var k = startIdx; k < classified.length; k++) {
       var item = classified[k];
       if (item.outgoing) continue;
@@ -123,20 +142,6 @@ export const INJECTOR_SOURCE = `
       if (lastSentText && item.text.indexOf(lastSentText.slice(0, 24)) !== -1) continue;
       PENDING.push({ id: fp, text: item.text, kind: 'dm_incoming', channel: 'dm' });
       lastScanInfo.queued++;
-      queuedAny = true;
-    }
-
-    if (!queuedAny && classified.length) {
-      var last = classified[classified.length - 1];
-      var fp2 = fingerprint(last.text, 'dm');
-      if (!SEEN.has(fp2) && !(lastSentText && last.text.indexOf(lastSentText.slice(0, 24)) !== -1)) {
-        markSeen(fp2);
-        if (!last.outgoing || lastOut < 0) {
-          PENDING.push({ id: fp2, text: last.text, kind: 'dm_incoming', channel: 'dm' });
-          lastScanInfo.queued++;
-          lastScanInfo.method = 'force_last';
-        }
-      }
     }
 
     for (var m = 0; m < startIdx && m < classified.length; m++) {
@@ -194,142 +199,82 @@ export const INJECTOR_SOURCE = `
       thread: isThread(),
       post: isPostPage(),
       hasCompose: hasCompose(),
-      lastScan: lastScanInfo,
-      convCount: (window.__TE_IG_LIST_CONVERSATIONS__ && window.__TE_IG_LIST_CONVERSATIONS__().length) || 0
+      lastScan: lastScanInfo
     };
   };
 
-  /**
-   * List conversation rows from inbox left panel.
-   * Returns { index, preview, href? } — open via __TE_IG_OPEN_CONV_INDEX__
-   */
+  /** ONLY unread conversations */
   window.__TE_IG_LIST_CONVERSATIONS__ = function () {
     var items = [];
     var seen = new Set();
 
-    function pushItem(indexKey, preview, href, el) {
-      var key = href || indexKey || preview.slice(0, 40);
-      if (seen.has(key)) return;
+    function consider(el, href) {
+      if (!el || !isUnreadRow(el)) return;
+      var preview = (el.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 100);
+      var key = href || preview.slice(0, 50);
+      if (!preview || seen.has(key)) return;
       seen.add(key);
-      items.push({
-        index: items.length,
-        preview: (preview || '').replace(/\\s+/g, ' ').trim().slice(0, 100),
-        href: href || '',
-        // store nothing DOM-related in JSON; open by re-query index
-      });
+      items.push({ index: items.length, preview: preview, href: href || '', unread: true });
     }
 
-    // 1) Classic anchors
     var anchors = document.querySelectorAll('a[href*="/direct/t/"]');
     for (var i = 0; i < anchors.length; i++) {
       var a = anchors[i];
       var href = a.getAttribute('href') || '';
-      var prev = (a.innerText || '').trim();
-      // climb for richer preview
       var row = a.closest('[role="button"]') || a.parentElement;
-      if (row && row.innerText) prev = row.innerText.trim();
-      pushItem('a-' + i, prev, href, a);
-      if (items.length >= 12) break;
+      consider(row || a, href);
+      if (items.length >= 15) break;
     }
 
-    // 2) listbox / list rows
     if (items.length === 0) {
       var rows = document.querySelectorAll(
         '[role="listbox"] [role="button"], [role="list"] [role="button"], div[role="button"]'
       );
-      for (var r = 0; r < rows.length && items.length < 12; r++) {
+      for (var r = 0; r < rows.length && items.length < 15; r++) {
         var el = rows[r];
-        var t = (el.innerText || '').replace(/\\s+/g, ' ').trim();
-        if (!t || t.length < 2) continue;
-        // skip pure UI chrome
-        if (/^(Messages|Requests|Primary|General|Search|پیام|درخواست)/i.test(t) && t.length < 20) continue;
-        // must look like a conversation: has some text and reasonable height
         try {
           var rect = el.getBoundingClientRect();
           if (rect.height < 40 || rect.height > 120) continue;
-          if (rect.width < 120) continue;
-          // left half of screen = inbox list
           if (rect.left > (window.innerWidth || 800) * 0.55) continue;
         } catch (e) { continue; }
         var link = el.querySelector('a[href*="/direct/t/"]');
-        pushItem('row-' + r, t, link ? (link.getAttribute('href') || '') : '', el);
-      }
-    }
-
-    // 3) Any element with href-like direct/t in outerHTML near left
-    if (items.length === 0) {
-      var allBtns = document.querySelectorAll('div[role="button"]');
-      for (var b = 0; b < allBtns.length && items.length < 12; b++) {
-        var bt = allBtns[b];
-        var html = '';
-        try { html = bt.innerHTML || ''; } catch (e) {}
-        if (html.indexOf('/direct/t/') === -1 && html.indexOf('direct') === -1) {
-          // still allow tall left rows
-          try {
-            var rc = bt.getBoundingClientRect();
-            if (rc.left > 400 || rc.height < 48 || rc.height > 100) continue;
-          } catch (e2) { continue; }
-        }
-        var tx = (bt.innerText || '').replace(/\\s+/g, ' ').trim();
-        if (tx.length < 3) continue;
-        pushItem('b-' + b, tx, '', bt);
+        consider(el, link ? (link.getAttribute('href') || '') : '');
       }
     }
 
     return items;
   };
 
-  // Back-compat alias
   window.__TE_IG_LIST_UNREAD__ = window.__TE_IG_LIST_CONVERSATIONS__;
 
   window.__TE_IG_OPEN_CONV_INDEX__ = function (index) {
-    var items = window.__TE_IG_LIST_CONVERSATIONS__();
-    if (!items || !items[index]) return { ok: false, reason: 'bad_index' };
-
-    // Re-find and click
+    // Re-list unread only and click
+    var unreadRows = [];
     var anchors = document.querySelectorAll('a[href*="/direct/t/"]');
-    if (items[index].href) {
-      for (var i = 0; i < anchors.length; i++) {
-        var h = anchors[i].getAttribute('href') || '';
-        if (h === items[index].href || h.indexOf(items[index].href) !== -1) {
-          anchors[i].click();
-          return { ok: true, via: 'href_click' };
-        }
+    for (var i = 0; i < anchors.length; i++) {
+      var a = anchors[i];
+      var row = a.closest('[role="button"]') || a.parentElement;
+      if (row && isUnreadRow(row)) unreadRows.push({ el: a, href: a.getAttribute('href') || '' });
+    }
+    if (!unreadRows.length) {
+      var candidates = document.querySelectorAll(
+        '[role="listbox"] [role="button"], [role="list"] [role="button"], div[role="button"]'
+      );
+      for (var r = 0; r < candidates.length; r++) {
+        var el = candidates[r];
+        try {
+          var rect = el.getBoundingClientRect();
+          if (rect.height < 40 || rect.height > 120) continue;
+          if (rect.left > (window.innerWidth || 800) * 0.55) continue;
+        } catch (e) { continue; }
+        if (isUnreadRow(el)) unreadRows.push({ el: el, href: '' });
       }
     }
-
-    // Click Nth left-panel conversation button
-    var rows = [];
-    var candidates = document.querySelectorAll(
-      '[role="listbox"] [role="button"], [role="list"] [role="button"], div[role="button"]'
-    );
-    for (var r = 0; r < candidates.length; r++) {
-      var el = candidates[r];
-      try {
-        var rect = el.getBoundingClientRect();
-        if (rect.height < 40 || rect.height > 120) continue;
-        if (rect.left > (window.innerWidth || 800) * 0.55) continue;
-        var t = (el.innerText || '').trim();
-        if (!t || t.length < 2) continue;
-        rows.push(el);
-      } catch (e) {}
+    if (unreadRows[index]) {
+      unreadRows[index].el.click();
+      return { ok: true, via: 'unread_click', total: unreadRows.length };
     }
-    if (rows[index]) {
-      rows[index].click();
-      return { ok: true, via: 'index_click', count: rows.length };
-    }
-
-    if (items[index].href) {
-      var href = items[index].href;
-      location.href = href.indexOf('http') === 0 ? href : ('https://www.instagram.com' + href);
-      return { ok: true, via: 'location' };
-    }
-
-    return { ok: false, reason: 'not_found', rows: rows.length };
-  };
-
-  window.__TE_IG_OPEN_THREAD__ = function (href) {
-    return window.__TE_IG_OPEN_CONV_INDEX__(0);
+    return { ok: false, reason: 'no_unread', total: unreadRows.length };
   };
 
   window.__TE_IG_OPEN_HREF__ = function (href) {
@@ -361,6 +306,27 @@ export const INJECTOR_SOURCE = `
     }
     out.sort(function (a, b) { return (b.score || 0) - (a.score || 0); });
     return out.slice(0, 12);
+  };
+
+  /** Like shared post/media in open DM thread */
+  window.__TE_IG_LIKE_SHARED__ = function () {
+    var buttons = document.querySelectorAll('[aria-label="Like"], [aria-label="پسندیدن"], [aria-label*="Like"]');
+    for (var i = 0; i < buttons.length; i++) {
+      try {
+        buttons[i].click();
+        return { ok: true };
+      } catch (e) {}
+    }
+    // heart svg buttons near media
+    var all = document.querySelectorAll('div[role="button"], button');
+    for (var j = 0; j < all.length; j++) {
+      var al = (all[j].getAttribute('aria-label') || '').toLowerCase();
+      if (al === 'like' || al.indexOf('like') !== -1) {
+        all[j].click();
+        return { ok: true };
+      }
+    }
+    return { ok: false, reason: 'no_like_btn' };
   };
 
   function fillAndSend(box, text) {
