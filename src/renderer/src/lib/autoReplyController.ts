@@ -1,4 +1,6 @@
-import { generateReply, type IncomingMessage } from './replyEngine'
+import { generateReply, generateCommentReply, type IncomingMessage } from './replyEngine'
+import type { FeatureFlags, KeywordRule } from './types'
+import { DEFAULT_FLAGS } from './types'
 
 export type ActivityLevel = 'info' | 'success' | 'warn' | 'error'
 
@@ -9,6 +11,13 @@ export interface ActivityItem {
   at: number
 }
 
+interface PendingItem extends IncomingMessage {
+  channel: 'dm' | 'comment'
+  username?: string
+  isMention?: boolean
+  path?: string
+}
+
 type WebviewLike = Electron.WebviewTag
 
 export class AutoReplyController {
@@ -16,7 +25,7 @@ export class AutoReplyController {
   private memory = ''
   private replyDelayMs = 2500
   private processing = false
-  private queue: IncomingMessage[] = []
+  private queue: PendingItem[] = []
   private repliedIds = new Set<string>()
   private activities: ActivityItem[] = []
   private listeners = new Set<(items: ActivityItem[]) => void>()
@@ -24,6 +33,10 @@ export class AutoReplyController {
   private webview: WebviewLike | null = null
   private injectorSource = ''
   private readyLogged = false
+  private flags: FeatureFlags = { ...DEFAULT_FLAGS }
+  private keywordRules: KeywordRule[] = []
+  /** DM text waiting to send after profile navigation */
+  private pendingDmAfterNav: { username: string; text: string } | null = null
 
   setEnabled(v: boolean): void {
     if (this.enabled === v) return
@@ -39,6 +52,14 @@ export class AutoReplyController {
 
   setReplyDelay(ms: number): void {
     this.replyDelayMs = Math.max(800, Math.min(15000, ms))
+  }
+
+  setFlags(flags: Partial<FeatureFlags>): void {
+    this.flags = { ...this.flags, ...flags }
+  }
+
+  setKeywordRules(rules: KeywordRule[]): void {
+    this.keywordRules = Array.isArray(rules) ? rules : []
   }
 
   getActivities(): ActivityItem[] {
@@ -58,31 +79,22 @@ export class AutoReplyController {
       message,
       at: Date.now()
     }
-    this.activities = [item, ...this.activities].slice(0, 50)
+    this.activities = [item, ...this.activities].slice(0, 60)
     this.listeners.forEach((fn) => fn(this.getActivities()))
   }
 
-  /** Attach webview and start host-side polling (reliable bridge). */
   bindWebview(webview: WebviewLike, injectorSource: string): void {
     this.webview = webview
     this.injectorSource = injectorSource
-    this.startPolling()
+    if (this.pollTimer) clearInterval(this.pollTimer)
+    this.pollTimer = setInterval(() => void this.tick(), 1500)
   }
 
   unbindWebview(): void {
-    if (this.pollTimer) {
-      clearInterval(this.pollTimer)
-      this.pollTimer = null
-    }
+    if (this.pollTimer) clearInterval(this.pollTimer)
+    this.pollTimer = null
     this.webview = null
     this.readyLogged = false
-  }
-
-  private startPolling(): void {
-    if (this.pollTimer) clearInterval(this.pollTimer)
-    this.pollTimer = setInterval(() => {
-      void this.tick()
-    }, 1500)
   }
 
   private async tick(): Promise<void> {
@@ -90,7 +102,6 @@ export class AutoReplyController {
     if (!wv) return
 
     try {
-      // Ensure injector is present
       const hasInjector = await wv.executeJavaScript(
         '!!(window.__TE_IG_POLL__ && window.__TE_IG_SEND_REPLY__)'
       )
@@ -101,118 +112,235 @@ export class AutoReplyController {
 
       const status = (await wv.executeJavaScript(
         'window.__TE_IG_STATUS__ ? window.__TE_IG_STATUS__() : null'
-      )) as { path?: string; ready?: boolean; seen?: number } | null
+      )) as {
+        path?: string
+        ready?: boolean
+        direct?: boolean
+        post?: boolean
+      } | null
 
       if (status?.ready && !this.readyLogged) {
         this.readyLogged = true
-        this.pushActivity(
-          'info',
-          `مانیتور آماده — مسیر: ${status.path || '?'}`
-        )
+        this.pushActivity('info', `مانیتور آماده — ${status.path || '?'}`)
+      }
+
+      // After navigating to profile for keyword DM
+      if (this.pendingDmAfterNav && status?.path) {
+        const u = this.pendingDmAfterNav.username
+        if (status.path.includes(`/${u}`)) {
+          await this.tryClickMessageAndSend(this.pendingDmAfterNav.text)
+          this.pendingDmAfterNav = null
+        }
       }
 
       const batch = (await wv.executeJavaScript(
         'window.__TE_IG_POLL__ ? window.__TE_IG_POLL__() : []'
-      )) as Array<{ id: string; text: string; kind: string }>
+      )) as Array<{
+        id: string
+        text: string
+        kind: string
+        username?: string
+        isMention?: boolean
+        path?: string
+      }>
 
-      if (!Array.isArray(batch) || batch.length === 0) return
+      if (!Array.isArray(batch) || !batch.length) return
 
+      // Process in order (oldest first as scanned)
       for (const item of batch) {
-        if (item.kind === 'incoming') {
-          this.onIncoming(item.id, item.text)
+        if (item.kind === 'dm_incoming') {
+          this.enqueue({
+            id: item.id,
+            text: item.text,
+            timestamp: Date.now(),
+            channel: 'dm'
+          })
+        } else if (item.kind === 'comment') {
+          this.enqueue({
+            id: item.id,
+            text: item.text,
+            timestamp: Date.now(),
+            channel: 'comment',
+            username: item.username,
+            isMention: item.isMention,
+            path: item.path
+          })
         }
       }
+
+      void this.processQueue()
     } catch {
-      // webview may be mid-navigation
+      // navigation
     }
   }
 
-  private onIncoming(id: string, text: string): void {
-    const clean = (text || '').trim()
-    if (!clean || this.repliedIds.has(id)) return
+  private enqueue(item: PendingItem): void {
+    if (this.repliedIds.has(item.id)) return
+    if (this.queue.some((q) => q.id === item.id)) return
 
-    this.pushActivity(
-      'info',
-      `پیام جدید: ${clean.slice(0, 70)}${clean.length > 70 ? '…' : ''}`
-    )
-
-    if (!this.enabled) {
-      this.pushActivity('warn', 'پاسخ‌گویی خاموش است — نادیده گرفته شد')
-      return
+    this.queue.push(item)
+    const preview = item.text.slice(0, 55) + (item.text.length > 55 ? '…' : '')
+    if (item.channel === 'dm') {
+      this.pushActivity('info', `پیام جدید (دایرکت): ${preview}`)
+    } else {
+      this.pushActivity(
+        'info',
+        `کامنت جدید${item.username ? ' از @' + item.username : ''}: ${preview}`
+      )
     }
-
-    this.queue.push({ id, text: clean, timestamp: Date.now() })
-    void this.processQueue()
   }
 
-  /** Optional: still accept console bridge events */
-  handleGuestEvent(raw: string): void {
-    if (!raw.startsWith('TE_IG|')) return
-    try {
-      const data = JSON.parse(raw.slice(5)) as {
-        type: string
-        payload?: Record<string, unknown>
-      }
-      if (data.type === 'incoming') {
-        const text = String(data.payload?.text || '').trim()
-        const id = String(data.payload?.id || text)
-        this.onIncoming(id, text)
-      }
-    } catch {
-      // ignore
+  private matchKeywordRule(text: string): KeywordRule | null {
+    if (!this.flags.keywordRulesEnabled) return null
+    const n = text.toLowerCase()
+    for (const rule of this.keywordRules) {
+      if (!rule.enabled || !rule.keyword.trim()) continue
+      if (n.includes(rule.keyword.trim().toLowerCase())) return rule
     }
+    return null
   }
 
   private async processQueue(): Promise<void> {
     if (this.processing || !this.webview) return
+    if (!this.enabled) {
+      // keep queue but don't reply
+      return
+    }
     this.processing = true
 
     try {
+      // Strict sequential order
       while (this.queue.length > 0 && this.enabled) {
         const msg = this.queue.shift()!
         if (this.repliedIds.has(msg.id)) continue
 
-        const reply = generateReply(msg.text, this.memory)
-        this.pushActivity(
-          'info',
-          `پاسخ پیشنهادی: ${reply.slice(0, 60)}${reply.length > 60 ? '…' : ''}`
-        )
-
-        await sleep(this.replyDelayMs)
-        if (!this.enabled) break
-
-        const result = await this.sendReply(reply)
-        if (result.ok) {
-          this.repliedIds.add(msg.id)
-          this.pushActivity('success', 'پاسخ ارسال شد')
+        if (msg.channel === 'dm') {
+          await this.handleDm(msg)
         } else {
-          this.pushActivity('error', `ارسال ناموفق: ${result.reason || 'unknown'}`)
-          if (result.reason === 'no_compose') {
-            this.pushActivity('warn', 'باکس نوشتن پیدا نشد — یک گفتگو را باز کنید')
-          }
-          if (result.reason === 'injector_missing') {
-            this.pushActivity('warn', 'مانیتور تزریق نشده — صفحه را رفرش کنید')
-          }
+          await this.handleComment(msg)
         }
 
-        await sleep(1000)
+        await sleep(900)
       }
     } finally {
       this.processing = false
     }
   }
 
-  private async sendReply(text: string): Promise<{ ok: boolean; reason?: string }> {
+  private async handleDm(msg: PendingItem): Promise<void> {
+    const reply = generateReply(msg.text, this.memory)
+    this.pushActivity('info', `پاسخ دایرکت: ${reply.slice(0, 50)}${reply.length > 50 ? '…' : ''}`)
+
+    await sleep(this.replyDelayMs)
+    if (!this.enabled) return
+
+    const result = await this.sendDm(reply)
+    if (result.ok) {
+      this.repliedIds.add(msg.id)
+      this.pushActivity('success', 'پاسخ دایرکت ارسال شد')
+    } else {
+      this.pushActivity('error', `ارسال دایرکت ناموفق: ${result.reason}`)
+      // put back once if compose missing
+      if (result.reason === 'no_compose') {
+        this.pushActivity('warn', 'گفتگو را باز نگه دارید')
+      }
+    }
+  }
+
+  private async handleComment(msg: PendingItem): Promise<void> {
+    const rule = this.matchKeywordRule(msg.text)
+
+    // Feature gates
+    if (!rule) {
+      if (msg.isMention && !this.flags.replyMentions) {
+        this.repliedIds.add(msg.id)
+        return
+      }
+      if (!msg.isMention && !this.flags.replyOwnPostComments) {
+        this.repliedIds.add(msg.id)
+        return
+      }
+    }
+
+    let commentText: string
+    if (rule?.commentReply?.trim()) {
+      commentText = rule.commentReply.trim()
+    } else {
+      commentText = generateCommentReply(msg.text, this.memory)
+    }
+
+    this.pushActivity('info', `پاسخ کامنت: ${commentText.slice(0, 50)}…`)
+    await sleep(this.replyDelayMs)
+    if (!this.enabled) return
+
+    const result = await this.sendComment(commentText, msg.text)
+    if (result.ok) {
+      this.repliedIds.add(msg.id)
+      this.pushActivity('success', 'پاسخ کامنت ارسال شد')
+    } else {
+      this.pushActivity('error', `کامنت ناموفق: ${result.reason}`)
+      return
+    }
+
+    // Keyword → also DM
+    if (rule?.dmMessage?.trim() && msg.username) {
+      this.pushActivity('info', `ارسال دایرکت کلیدواژه‌ای به @${msg.username}`)
+      this.pendingDmAfterNav = { username: msg.username, text: rule.dmMessage.trim() }
+      await this.webview?.executeJavaScript(
+        `window.__TE_IG_OPEN_DM__ && window.__TE_IG_OPEN_DM__(${JSON.stringify(msg.username)})`
+      )
+    }
+  }
+
+  private async sendDm(text: string): Promise<{ ok: boolean; reason?: string }> {
     const wv = this.webview
     if (!wv) return { ok: false, reason: 'no_webview' }
-    const escaped = JSON.stringify(text)
     try {
-      const result = await wv.executeJavaScript(
-        `window.__TE_IG_SEND_REPLY__ ? window.__TE_IG_SEND_REPLY__(${escaped}) : ({ ok: false, reason: 'injector_missing' })`
-      )
-      return result as { ok: boolean; reason?: string }
+      return (await wv.executeJavaScript(
+        `window.__TE_IG_SEND_REPLY__ ? window.__TE_IG_SEND_REPLY__(${JSON.stringify(text)}) : ({ ok:false, reason:'injector_missing' })`
+      )) as { ok: boolean; reason?: string }
     } catch (e) {
       return { ok: false, reason: e instanceof Error ? e.message : 'exec_failed' }
+    }
+  }
+
+  private async sendComment(
+    text: string,
+    targetText: string
+  ): Promise<{ ok: boolean; reason?: string }> {
+    const wv = this.webview
+    if (!wv) return { ok: false, reason: 'no_webview' }
+    try {
+      return (await wv.executeJavaScript(
+        `window.__TE_IG_REPLY_COMMENT__ ? window.__TE_IG_REPLY_COMMENT__(${JSON.stringify({ text, targetText })}) : ({ ok:false, reason:'injector_missing' })`
+      )) as { ok: boolean; reason?: string }
+    } catch (e) {
+      return { ok: false, reason: e instanceof Error ? e.message : 'exec_failed' }
+    }
+  }
+
+  private async tryClickMessageAndSend(dmText: string): Promise<void> {
+    const wv = this.webview
+    if (!wv) return
+    try {
+      // Click Message / پیام on profile
+      await wv.executeJavaScript(`
+        (async function() {
+          var btns = Array.from(document.querySelectorAll('div[role="button"], button, a'));
+          var msg = btns.find(function(b) {
+            var t = (b.innerText || b.getAttribute('aria-label') || '').trim();
+            return /^(Message|پیام|ارسال پیام)$/i.test(t);
+          });
+          if (msg) { msg.click(); return true; }
+          return false;
+        })()
+      `)
+      await sleep(2000)
+      const sent = await this.sendDm(dmText)
+      if (sent.ok) this.pushActivity('success', 'دایرکت کلیدواژه‌ای ارسال شد')
+      else this.pushActivity('warn', 'دایرکت کلیدواژه: باکس پیام پیدا نشد — دستی چک کنید')
+    } catch {
+      this.pushActivity('warn', 'خطا در باز کردن دایرکت پروفایل')
     }
   }
 
@@ -225,6 +353,10 @@ export class AutoReplyController {
     } catch {
       this.pushActivity('error', 'خطا در تزریق مانیتور')
     }
+  }
+
+  handleGuestEvent(_raw: string): void {
+    // reserved
   }
 }
 

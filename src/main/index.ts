@@ -8,6 +8,16 @@ const store = new Store({
     memory: '',
     autoReplyEnabled: false,
     replyDelayMs: 2500,
+    replyOwnPostComments: true,
+    replyMentions: true,
+    keywordRulesEnabled: true,
+    keywordRules: [] as Array<{
+      id: string
+      keyword: string
+      commentReply: string
+      dmMessage: string
+      enabled: boolean
+    }>,
     windowBounds: { width: 1400, height: 900 }
   }
 })
@@ -57,8 +67,7 @@ function createTrayIcon(): Electron.NativeImage {
       const dy = Math.max(camR - (y - camPad), 0, y - (camPad + camH - 1 - camR))
       const dist = Math.sqrt(dx * dx + dy * dy)
       if (dist <= camR + 0.3) {
-        const inner = dist < camR - 1.6
-        if (!inner) setPixel(x, y, 255, 255, 255, 230)
+        if (!(dist < camR - 1.6)) setPixel(x, y, 255, 255, 255, 230)
       }
     }
   }
@@ -103,9 +112,7 @@ function createWindow(): void {
     }
   })
 
-  mainWindow.on('ready-to-show', () => {
-    mainWindow?.show()
-  })
+  mainWindow.on('ready-to-show', () => mainWindow?.show())
 
   mainWindow.on('resize', () => {
     if (mainWindow) {
@@ -126,11 +133,9 @@ function createWindow(): void {
     return { action: 'deny' }
   })
 
-  // Allow webview guest to use limited features
   mainWindow.webContents.on('will-attach-webview', (_event, webPreferences) => {
     webPreferences.nodeIntegration = false
     webPreferences.contextIsolation = true
-    // Do not attach app preload to guest
     delete (webPreferences as any).preload
   })
 
@@ -142,39 +147,32 @@ function createWindow(): void {
 }
 
 function createTray(): void {
-  const icon = createTrayIcon()
-  tray = new Tray(icon)
-
-  const contextMenu = Menu.buildFromTemplate([
-    {
-      label: 'نمایش اپلیکیشن',
-      click: () => {
-        mainWindow?.show()
-        mainWindow?.focus()
-      }
-    },
-    {
-      label: 'مخفی کردن',
-      click: () => mainWindow?.hide()
-    },
-    { type: 'separator' },
-    {
-      label: 'خروج',
-      click: () => {
-        ;(app as any).isQuitting = true
-        app.quit()
-      }
-    }
-  ])
-
+  tray = new Tray(createTrayIcon())
   tray.setToolTip('TE IG Assist — دستیار حرفه‌ای اینستاگرام')
-  tray.setContextMenu(contextMenu)
-
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      {
+        label: 'نمایش اپلیکیشن',
+        click: () => {
+          mainWindow?.show()
+          mainWindow?.focus()
+        }
+      },
+      { label: 'مخفی کردن', click: () => mainWindow?.hide() },
+      { type: 'separator' },
+      {
+        label: 'خروج',
+        click: () => {
+          ;(app as any).isQuitting = true
+          app.quit()
+        }
+      }
+    ])
+  )
   tray.on('double-click', () => {
     mainWindow?.show()
     mainWindow?.focus()
   })
-
   tray.on('click', () => {
     if (process.platform === 'win32') {
       mainWindow?.show()
@@ -183,8 +181,8 @@ function createTray(): void {
   })
 }
 
-ipcMain.handle('store:get', (_event, key: string) => store.get(key))
-ipcMain.handle('store:set', (_event, key: string, value: unknown) => {
+ipcMain.handle('store:get', (_e, key: string) => store.get(key))
+ipcMain.handle('store:set', (_e, key: string, value: unknown) => {
   store.set(key, value)
   return true
 })
@@ -192,14 +190,9 @@ ipcMain.handle('store:getAll', () => store.store)
 
 app.whenReady().then(() => {
   electronApp.setAppUserModelId('com.majidt90.te-ig-assist')
-
-  app.on('browser-window-created', (_, window) => {
-    optimizer.watchWindowShortcuts(window)
-  })
-
+  app.on('browser-window-created', (_, window) => optimizer.watchWindowShortcuts(window))
   createWindow()
   createTray()
-
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
     else mainWindow?.show()
@@ -207,7 +200,6 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {})
-
 app.on('before-quit', () => {
   ;(app as any).isQuitting = true
 })
