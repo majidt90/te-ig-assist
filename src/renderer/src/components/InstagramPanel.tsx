@@ -25,6 +25,7 @@ export default function InstagramPanel(): JSX.Element {
     const vals = await Promise.all([
       window.api.getStore('autoReplyEnabled'),
       window.api.getStore('memory'),
+      window.api.getStore('logic'),
       window.api.getStore('autoReplyDms'),
       window.api.getStore('autoReplyComments'),
       window.api.getStore('autoReplyNotifications'),
@@ -42,6 +43,7 @@ export default function InstagramPanel(): JSX.Element {
     const [
       enabled,
       memory,
+      logic,
       dms,
       comments,
       notifs,
@@ -59,6 +61,7 @@ export default function InstagramPanel(): JSX.Element {
 
     autoReplyController.setEnabled(Boolean(enabled))
     autoReplyController.setMemory(typeof memory === 'string' ? memory : '')
+    autoReplyController.setLogic(typeof logic === 'string' ? logic : '')
     autoReplyController.setFlags({
       autoReplyDms: dms !== false,
       autoReplyComments: comments !== false,

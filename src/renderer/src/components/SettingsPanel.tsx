@@ -12,7 +12,8 @@ import {
   Trash2,
   Zap,
   Inbox,
-  UserPlus
+  UserPlus,
+  GitBranch
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import type { KeywordRule } from '../lib/types'
@@ -22,6 +23,7 @@ interface SettingsPanelProps {
 }
 
 const MAX_MEMORY_CHARS = 4000
+const MAX_LOGIC_CHARS = 3000
 
 function newRule(): KeywordRule {
   return {
@@ -81,9 +83,7 @@ function DelaySlider({
     <div className="rounded-lg border border-[hsl(var(--border)/0.5)] bg-black/20 px-3 py-2">
       <div className="mb-1.5 flex items-center justify-between text-[11px]">
         <span className="text-[hsl(var(--muted-foreground))]">{label}</span>
-        <span className="tabular-nums text-[hsl(var(--foreground))]">
-          {valueSec.toLocaleString('fa-IR')} ثانیه
-        </span>
+        <span className="tabular-nums">{valueSec.toLocaleString('fa-IR')} ثانیه</span>
       </div>
       <input
         type="range"
@@ -100,6 +100,7 @@ function DelaySlider({
 
 export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.Element {
   const [memory, setMemory] = useState('')
+  const [logic, setLogic] = useState('')
   const [autoReplyDms, setAutoReplyDms] = useState(true)
   const [autoReplyComments, setAutoReplyComments] = useState(true)
   const [autoReplyNotifications, setAutoReplyNotifications] = useState(true)
@@ -122,6 +123,7 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
     void (async () => {
       const keys = [
         'memory',
+        'logic',
         'autoReplyDms',
         'autoReplyComments',
         'autoReplyNotifications',
@@ -139,6 +141,7 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
       const vals = await Promise.all(keys.map((k) => window.api.getStore(k)))
       const map = Object.fromEntries(keys.map((k, i) => [k, vals[i]]))
       if (typeof map.memory === 'string') setMemory(map.memory)
+      if (typeof map.logic === 'string') setLogic(map.logic)
       if (typeof map.autoReplyDms === 'boolean') setAutoReplyDms(map.autoReplyDms)
       if (typeof map.autoReplyComments === 'boolean') setAutoReplyComments(map.autoReplyComments)
       if (typeof map.autoReplyNotifications === 'boolean') setAutoReplyNotifications(map.autoReplyNotifications)
@@ -158,6 +161,7 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
   const handleSaveMemory = async () => {
     setIsSaving(true)
     await window.api.setStore('memory', memory)
+    await window.api.setStore('logic', logic)
     setIsSaving(false)
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
@@ -187,8 +191,6 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
     setTimeout(() => setRulesSaved(false), 2000)
   }
 
-  const charPercent = Math.min(100, (memory.length / MAX_MEMORY_CHARS) * 100)
-
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <AnimatePresence mode="wait">
@@ -202,27 +204,25 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
           >
             <section className="space-y-3">
               <h3 className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
-                قابلیت‌های اصلی + تأخیر اختصاصی
+                قابلیت‌های اصلی + تأخیر
               </h3>
-
               <div className="space-y-2">
                 <ToggleSwitch
                   checked={autoReplyDms}
                   onChange={setAutoReplyDms}
                   label="پاسخ‌گویی دایرکت"
-                  desc="خواندن و پاسخ به Direct"
+                  desc="فقط گفتگوهای unread"
                 />
                 {autoReplyDms && (
                   <DelaySlider label="تأخیر دایرکت" valueSec={delayDmsSec} onChange={setDelayDmsSec} />
                 )}
               </div>
-
               <div className="space-y-2">
                 <ToggleSwitch
                   checked={autoReplyComments}
                   onChange={setAutoReplyComments}
                   label="پاسخ‌گویی کامنت"
-                  desc="پاسخ به کامنت پست"
+                  desc="کامنت پست"
                 />
                 {autoReplyComments && (
                   <DelaySlider
@@ -232,17 +232,16 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
                   />
                 )}
               </div>
-
               <div className="space-y-2">
                 <ToggleSwitch
                   checked={autoReplyNotifications}
                   onChange={setAutoReplyNotifications}
                   label="پاسخ‌گویی نوتیفیکیشن"
-                  desc="منشن و کامنت از صفحه فعالیت"
+                  desc="منشن و کامنت از فعالیت"
                 />
                 {autoReplyNotifications && (
                   <DelaySlider
-                    label="تأخیر نوتیفیکیشن"
+                    label="تأخیر نوتیف"
                     valueSec={delayNotificationsSec}
                     onChange={setDelayNotificationsSec}
                   />
@@ -258,15 +257,15 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
               <ToggleSwitch
                 checked={walkUnreadDms}
                 onChange={setWalkUnreadDms}
-                label="پیمایش خودکار گفتگوها"
-                desc="لیست inbox را یکی‌یکی باز می‌کند"
+                label="پیمایش فقط unread"
+                desc="فقط چت‌هایی که پیام خوانده‌نشده دارند"
               />
             </section>
 
             <section className="space-y-2">
               <h3 className="mb-1 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
                 <MessageSquare className="h-3.5 w-3.5 text-pink-400" />
-                جزئیات کامنت
+                کامنت
               </h3>
               <ToggleSwitch
                 checked={replyOwnPostComments}
@@ -307,13 +306,6 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
             >
               {settingsSaved ? 'ذخیره شد' : 'ذخیره تنظیمات'}
             </button>
-
-            <div className="card flex gap-2 text-[11px] text-[hsl(var(--muted-foreground))]">
-              <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sky-400" />
-              <p>
-                همه کارها (باز کردن چت، پاسخ، نوتیف) در یک صف زمانی مشترک اجرا می‌شوند تا تداخل نداشته باشند.
-              </p>
-            </div>
           </motion.div>
         )}
 
@@ -323,12 +315,12 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
             initial={{ opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -6 }}
-            className="flex h-full flex-col p-4"
+            className="flex h-full flex-col gap-3 overflow-y-auto p-4"
           >
-            <div className="mb-3 flex items-center justify-between">
+            <div className="flex items-center justify-between">
               <h3 className="flex items-center gap-2 text-[13px] font-semibold">
                 <Brain className="h-4 w-4 text-violet-400" />
-                حافظه
+                حافظه و منطق
               </h3>
               <button
                 onClick={handleSaveMemory}
@@ -339,20 +331,55 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
                 {saved ? 'ذخیره شد' : 'ذخیره'}
               </button>
             </div>
-            <textarea
-              value={memory}
-              onChange={(e) => {
-                if (e.target.value.length <= MAX_MEMORY_CHARS) setMemory(e.target.value)
-              }}
-              className="input-field min-h-0 flex-1 resize-none leading-[1.7]"
-              dir="rtl"
-            />
-            <div className="mt-2.5 h-1 overflow-hidden rounded-full bg-[hsl(var(--muted))]">
-              <motion.div className="h-full rounded-full bg-[hsl(var(--primary))]" animate={{ width: `${charPercent}%` }} />
+
+            <div>
+              <label className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-[hsl(var(--muted-foreground))]">
+                <Brain className="h-3.5 w-3.5 text-violet-400" />
+                حافظه (واقعیت‌ها)
+              </label>
+              <textarea
+                value={memory}
+                onChange={(e) => {
+                  if (e.target.value.length <= MAX_MEMORY_CHARS) setMemory(e.target.value)
+                }}
+                className="input-field min-h-[120px] resize-none leading-[1.7]"
+                dir="rtl"
+                placeholder={'من مجیدم\nفروشگاه لباس دارم\nقیمت از ۲۰۰ هزار...'}
+              />
             </div>
-            <div className="mt-3 flex gap-2 rounded-xl border border-violet-500/15 bg-violet-500/[0.06] px-3 py-2.5">
-              <Lightbulb className="h-3.5 w-3.5 shrink-0 text-violet-400" />
-              <p className="text-[11px] text-violet-200/80">هر خط یک واقعیت.</p>
+
+            <div>
+              <label className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-[hsl(var(--muted-foreground))]">
+                <GitBranch className="h-3.5 w-3.5 text-emerald-400" />
+                منطق (قوانین رفتاری)
+              </label>
+              <textarea
+                value={logic}
+                onChange={(e) => {
+                  if (e.target.value.length <= MAX_LOGIC_CHARS) setLogic(e.target.value)
+                }}
+                className="input-field min-h-[140px] resize-none leading-[1.7]"
+                dir="rtl"
+                placeholder={
+                  'اگر حال پرسید آنگاه تشکر کن و احوال بپرس\nاگر پست فرستاد آنگاه لایک کن\nاگر قیمت پرسید آنگاه از حافظه قیمت بگو'
+                }
+              />
+            </div>
+
+            <div className="flex gap-2 rounded-xl border border-emerald-500/15 bg-emerald-500/[0.06] px-3 py-2.5">
+              <Lightbulb className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400" />
+              <div className="text-[11px] leading-relaxed text-emerald-100/80">
+                <p className="mb-1 font-medium text-emerald-200/90">فرمت پیشنهادی هر خط:</p>
+                <p>اگر [شرط] آنگاه [عمل]</p>
+                <p className="mt-1 text-white/50">
+                  منطق تصمیم می‌گیرد چه واکنشی باشد؛ حافظه محتوای واقعی (اسم، قیمت، …) را می‌دهد.
+                </p>
+              </div>
+            </div>
+
+            <div className="card flex gap-2 text-[11px] text-[hsl(var(--muted-foreground))]">
+              <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sky-400" />
+              <p>هر دو بخش با یک دکمه ذخیره می‌شوند و با هم در موتور پاسخ استفاده می‌شوند.</p>
             </div>
           </motion.div>
         )}
@@ -368,7 +395,7 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
             <div className="flex items-center justify-between">
               <h3 className="flex items-center gap-2 text-[13px] font-semibold">
                 <Zap className="h-4 w-4 text-amber-400" />
-                کلیدواژه
+                کلیدواژه کامنت
               </h3>
               <button
                 onClick={handleSaveRules}
@@ -380,7 +407,7 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
             <ToggleSwitch
               checked={keywordRulesEnabled}
               onChange={setKeywordRulesEnabled}
-              label="فعال‌سازی قوانین"
+              label="فعال‌سازی قوانین کلیدواژه"
               desc="کلمه در کامنت → پاسخ + دایرکت"
             />
             {rules.map((rule, idx) => (
@@ -433,7 +460,7 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
             </button>
             <div className="flex gap-2 rounded-xl border border-amber-500/15 bg-amber-500/[0.06] px-3 py-2.5">
               <AtSign className="h-3.5 w-3.5 shrink-0 text-amber-400" />
-              <p className="text-[11px] text-amber-100/70">دایرکت کلیدواژه best-effort است.</p>
+              <p className="text-[11px] text-amber-100/70">برای رفتار عمومی از تب حافظه → منطق استفاده کنید.</p>
             </div>
           </motion.div>
         )}
