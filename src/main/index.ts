@@ -30,6 +30,7 @@ const store = new Store({
     licenseEmail: '',
     licenseLock: '',
     licenseKey: '',
+    licenseExpiresAt: '',
     windowBounds: { width: 1400, height: 900 }
   }
 })

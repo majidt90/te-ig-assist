@@ -3,7 +3,6 @@ import { motion, AnimatePresence } from 'framer-motion'
 import {
   Save,
   Brain,
-  Info,
   CheckCircle2,
   Lightbulb,
   MessageSquare,
@@ -14,10 +13,13 @@ import {
   Inbox,
   UserPlus,
   GitBranch,
-  ListFilter
+  ListFilter,
+  KeyRound,
+  Timer
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import type { DmListMode, KeywordRule } from '../lib/types'
+import { formatRemaining } from '../lib/license'
 
 interface SettingsPanelProps {
   activeTab: 'settings' | 'memory' | 'rules'
@@ -96,6 +98,107 @@ function DelaySlider({
         className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-[hsl(var(--muted))] accent-[hsl(var(--primary))]"
       />
     </div>
+  )
+}
+
+function LicenseSection(): JSX.Element {
+  const [username, setUsername] = useState('')
+  const [email, setEmail] = useState('')
+  const [expiresAt, setExpiresAt] = useState('')
+  const [keyPreview, setKeyPreview] = useState('')
+  const [remaining, setRemaining] = useState('')
+  const [expired, setExpired] = useState(false)
+
+  useEffect(() => {
+    void (async () => {
+      const [u, e, exp, key] = await Promise.all([
+        window.api.getStore('licenseUsername'),
+        window.api.getStore('licenseEmail'),
+        window.api.getStore('licenseExpiresAt'),
+        window.api.getStore('licenseKey')
+      ])
+      if (typeof u === 'string') setUsername(u)
+      if (typeof e === 'string') setEmail(e)
+      if (typeof exp === 'string') setExpiresAt(exp)
+      if (typeof key === 'string') setKeyPreview(key.slice(0, 28) + '…')
+    })()
+  }, [])
+
+  useEffect(() => {
+    if (!expiresAt) return
+    const tick = () => {
+      const r = formatRemaining(expiresAt)
+      setRemaining(r.label)
+      setExpired(r.expired)
+    }
+    tick()
+    const id = setInterval(tick, 1000)
+    return () => clearInterval(id)
+  }, [expiresAt])
+
+  const expDate = expiresAt
+    ? new Date(expiresAt).toLocaleDateString('fa-IR', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric'
+      })
+    : '—'
+
+  return (
+    <section className="space-y-2">
+      <h3 className="mb-1 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
+        <KeyRound className="h-3.5 w-3.5 text-violet-400" />
+        لایسنس
+      </h3>
+      <div className="rounded-xl border border-[hsl(var(--border)/0.7)] bg-[hsl(var(--secondary)/0.35)] p-3 space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[11px] text-[hsl(var(--muted-foreground))]">وضعیت</span>
+          <span
+            className={cn(
+              'rounded-full px-2 py-0.5 text-[10px] font-medium',
+              expired
+                ? 'bg-red-500/15 text-red-400'
+                : 'bg-emerald-500/15 text-emerald-400'
+            )}
+          >
+            {expired ? 'منقضی' : 'فعال'}
+          </span>
+        </div>
+        <div className="flex items-center gap-2 rounded-lg bg-black/25 px-3 py-2">
+          <Timer className={cn('h-4 w-4', expired ? 'text-red-400' : 'text-amber-400')} />
+          <div className="min-w-0 flex-1">
+            <p className="text-[10px] text-[hsl(var(--muted-foreground))]">زمان باقی‌مانده</p>
+            <p className={cn('text-[13px] font-semibold tabular-nums', expired && 'text-red-400')}>
+              {remaining || '—'}
+            </p>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 gap-1 text-[11px]">
+          <div className="flex justify-between gap-2">
+            <span className="text-[hsl(var(--muted-foreground))]">کاربر</span>
+            <span className="font-mono text-[10px]" dir="ltr">
+              {username || '—'}
+            </span>
+          </div>
+          <div className="flex justify-between gap-2">
+            <span className="text-[hsl(var(--muted-foreground))]">ایمیل</span>
+            <span className="truncate font-mono text-[10px]" dir="ltr">
+              {email || '—'}
+            </span>
+          </div>
+          <div className="flex justify-between gap-2">
+            <span className="text-[hsl(var(--muted-foreground))]">انقضا</span>
+            <span>{expDate}</span>
+          </div>
+          <div className="flex justify-between gap-2">
+            <span className="text-[hsl(var(--muted-foreground))]">کلید</span>
+            <span className="max-w-[60%] truncate font-mono text-[9px]" dir="ltr" title={keyPreview}>
+              {keyPreview || '—'}
+            </span>
+          </div>
+        </div>
+      </div>
+    </section>
   )
 }
 
@@ -221,6 +324,8 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
             exit={{ opacity: 0, y: -6 }}
             className="flex h-full flex-col gap-4 overflow-y-auto p-4"
           >
+            <LicenseSection />
+
             <section className="space-y-3">
               <h3 className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
                 قابلیت‌های اصلی + تأخیر
@@ -321,8 +426,6 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
                       {dmListMode === 'whitelist'
                         ? 'فقط به همین یوزرنیم‌ها پاسخ داده می‌شود.'
                         : 'به این یوزرنیم‌ها پاسخ داده نمی‌شود.'}
-                      {' '}
-                      هر خط یک یوزرنیم (بدون یا با @).
                     </p>
                   </>
                 )}
@@ -398,47 +501,27 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
                 {saved ? 'ذخیره شد' : 'ذخیره'}
               </button>
             </div>
-
-            <div>
-              <label className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-[hsl(var(--muted-foreground))]">
-                <Brain className="h-3.5 w-3.5 text-violet-400" />
-                حافظه (واقعیت‌ها)
-              </label>
-              <textarea
-                value={memory}
-                onChange={(e) => {
-                  if (e.target.value.length <= MAX_MEMORY_CHARS) setMemory(e.target.value)
-                }}
-                className="input-field min-h-[120px] resize-none leading-[1.7]"
-                dir="rtl"
-                placeholder={'من مجیدم\nفروشگاه لباس دارم\nقیمت از ۲۰۰ هزار...'}
-              />
-            </div>
-
-            <div>
-              <label className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-[hsl(var(--muted-foreground))]">
-                <GitBranch className="h-3.5 w-3.5 text-emerald-400" />
-                منطق (قوانین رفتاری)
-              </label>
-              <textarea
-                value={logic}
-                onChange={(e) => {
-                  if (e.target.value.length <= MAX_LOGIC_CHARS) setLogic(e.target.value)
-                }}
-                className="input-field min-h-[140px] resize-none leading-[1.7]"
-                dir="rtl"
-                placeholder={
-                  'اگر حال پرسید آنگاه تشکر کن و احوال بپرس\nاگر پست فرستاد آنگاه لایک کن\nاگر قیمت پرسید آنگاه از حافظه قیمت بگو'
-                }
-              />
-            </div>
-
+            <textarea
+              value={memory}
+              onChange={(e) => {
+                if (e.target.value.length <= MAX_MEMORY_CHARS) setMemory(e.target.value)
+              }}
+              className="input-field min-h-[120px] resize-none leading-[1.7]"
+              dir="rtl"
+              placeholder="حافظه…"
+            />
+            <textarea
+              value={logic}
+              onChange={(e) => {
+                if (e.target.value.length <= MAX_LOGIC_CHARS) setLogic(e.target.value)
+              }}
+              className="input-field min-h-[140px] resize-none leading-[1.7]"
+              dir="rtl"
+              placeholder="منطق…"
+            />
             <div className="flex gap-2 rounded-xl border border-emerald-500/15 bg-emerald-500/[0.06] px-3 py-2.5">
               <Lightbulb className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400" />
-              <div className="text-[11px] leading-relaxed text-emerald-100/80">
-                <p className="mb-1 font-medium text-emerald-200/90">فرمت پیشنهادی هر خط:</p>
-                <p>اگر [شرط] آنگاه [عمل]</p>
-              </div>
+              <p className="text-[11px] text-emerald-100/80">اگر [شرط] آنگاه [عمل]</p>
             </div>
           </motion.div>
         )}
@@ -519,7 +602,7 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
             </button>
             <div className="flex gap-2 rounded-xl border border-amber-500/15 bg-amber-500/[0.06] px-3 py-2.5">
               <AtSign className="h-3.5 w-3.5 shrink-0 text-amber-400" />
-              <p className="text-[11px] text-amber-100/70">برای فیلتر یوزر دایرکت از تب تنظیمات استفاده کنید.</p>
+              <p className="text-[11px] text-amber-100/70">فیلتر یوزر دایرکت در تب تنظیمات است.</p>
             </div>
           </motion.div>
         )}
