@@ -1,14 +1,15 @@
 /**
- * License helpers — TEIG1 format bound to username + email + lock + expiresAt
+ * TEIG2 license: username + email + licenseKey is enough to validate.
+ * Format: TEIG2.<base64url({lock,expiresAt})>.<320 hex signature>
  */
 
 const APP_SECRET = 'TE-IG-ASSIST-TERMIMAL-2026-v1'
 
-function normalizeUser(u: string): string {
+export function normalizeUser(u: string): string {
   return (u || '').trim().replace(/^@/, '').toLowerCase()
 }
 
-function normalizeEmail(e: string): string {
+export function normalizeEmail(e: string): string {
   return (e || '').trim().toLowerCase()
 }
 
@@ -42,13 +43,40 @@ function randomLock(len = 28): string {
   return out
 }
 
+function b64urlEncode(str: string): string {
+  const bytes = new TextEncoder().encode(str)
+  let bin = ''
+  bytes.forEach((b) => {
+    bin += String.fromCharCode(b)
+  })
+  const b64 =
+    typeof btoa !== 'undefined'
+      ? btoa(bin)
+      : Buffer.from(str, 'utf8').toString('base64')
+  return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+function b64urlDecode(str: string): string {
+  const pad = str.length % 4 === 0 ? '' : '='.repeat(4 - (str.length % 4))
+  const b64 = str.replace(/-/g, '+').replace(/_/g, '/') + pad
+  if (typeof atob !== 'undefined') {
+    const bin = atob(b64)
+    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0))
+    return new TextDecoder().decode(bytes)
+  }
+  return Buffer.from(b64, 'base64').toString('utf8')
+}
+
+export interface LicensePayload {
+  lock: string
+  expiresAt: string
+}
+
 export interface LicenseGenerateInput {
   username: string
   email: string
   lock?: string
-  /** Days from now; default 365 */
   daysValid?: number
-  /** Absolute ISO expiry; overrides daysValid if set */
   expiresAt?: string
 }
 
@@ -84,18 +112,57 @@ export async function generateLicense(input: LicenseGenerateInput): Promise<Lice
   const h2 = await sha256Hex(`${h1}|${material}`)
   const h3 = await sha256Hex(`${h2}|${h1}|${APP_SECRET}`)
   const h4 = await sha256Hex(`${username}|${h3}|${email}|${expiresAt}`)
-  const body = (h1 + h2 + h3 + h4 + h1.slice(0, 64)).slice(0, 320)
+  const sig = (h1 + h2 + h3 + h4 + h1.slice(0, 64)).slice(0, 320)
 
-  return {
-    license: `TEIG1.${body}`,
-    lock,
-    username,
-    email,
-    expiresAt,
-    daysValid
+  const payload: LicensePayload = { lock, expiresAt }
+  const license = `TEIG2.${b64urlEncode(JSON.stringify(payload))}.${sig}`
+
+  return { license, lock, username, email, expiresAt, daysValid }
+}
+
+export function parseLicenseKey(license: string): {
+  ok: boolean
+  payload?: LicensePayload
+  sig?: string
+  reason?: string
+} {
+  const key = (license || '').trim()
+  const parts = key.split('.')
+  if (parts.length !== 3 || parts[0] !== 'TEIG2') {
+    return { ok: false, reason: 'format' }
+  }
+  try {
+    const json = b64urlDecode(parts[1])
+    const payload = JSON.parse(json) as LicensePayload
+    if (!payload?.lock || !payload?.expiresAt) return { ok: false, reason: 'payload' }
+    return { ok: true, payload, sig: parts[2] }
+  } catch {
+    return { ok: false, reason: 'payload' }
   }
 }
 
+/** Validate with only username + email + license key */
+export async function validateLicense(
+  username: string,
+  email: string,
+  license: string
+): Promise<{ ok: boolean; reason?: string; expiresAt?: string; lock?: string }> {
+  const parsed = parseLicenseKey(license)
+  if (!parsed.ok || !parsed.payload || !parsed.sig) {
+    return { ok: false, reason: parsed.reason || 'format' }
+  }
+  const { lock, expiresAt } = parsed.payload
+  if (new Date(expiresAt).getTime() < Date.now()) {
+    return { ok: false, reason: 'expired', expiresAt, lock }
+  }
+  const gen = await generateLicense({ username, email, lock, expiresAt })
+  if (gen.license !== (license || '').trim()) {
+    return { ok: false, reason: 'mismatch' }
+  }
+  return { ok: true, expiresAt, lock }
+}
+
+/** @deprecated use validateLicense */
 export async function validateLicenseWithLock(
   username: string,
   email: string,
@@ -103,15 +170,11 @@ export async function validateLicenseWithLock(
   license: string,
   expiresAt: string
 ): Promise<{ ok: boolean; reason?: string }> {
-  try {
-    if (!expiresAt) return { ok: false, reason: 'no_expiry' }
-    if (new Date(expiresAt).getTime() < Date.now()) return { ok: false, reason: 'expired' }
-    const gen = await generateLicense({ username, email, lock, expiresAt })
-    if (gen.license === (license || '').trim()) return { ok: true }
-    return { ok: false, reason: 'mismatch' }
-  } catch {
-    return { ok: false, reason: 'error' }
-  }
+  const r = await validateLicense(username, email, license)
+  if (!r.ok) return { ok: false, reason: r.reason }
+  if (lock && r.lock && lock !== r.lock) return { ok: false, reason: 'mismatch' }
+  if (expiresAt && r.expiresAt && expiresAt !== r.expiresAt) return { ok: false, reason: 'mismatch' }
+  return { ok: true }
 }
 
 export function formatRemaining(expiresAt: string): {
