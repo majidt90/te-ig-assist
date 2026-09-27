@@ -22,6 +22,8 @@ const store = new Store({
     walkUnreadDms: true,
     acceptFollowRequests: false,
     followBack: false,
+    dmListMode: 'off',
+    dmUserList: [],
     keywordRules: [],
     windowBounds: { width: 1400, height: 900 }
   }
