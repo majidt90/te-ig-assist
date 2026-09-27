@@ -13,7 +13,6 @@ import {
   Trash2,
   Zap,
   Inbox,
-  Bell,
   UserPlus
 } from 'lucide-react'
 import { cn } from '../lib/utils'
@@ -33,6 +32,42 @@ function newRule(): KeywordRule {
     dmMessage: '',
     enabled: true
   }
+}
+
+/** RTL-friendly switch: ON = green track + thumb on the start side (right in RTL) */
+function ToggleSwitch({
+  checked,
+  onChange,
+  label,
+  desc
+}: {
+  checked: boolean
+  onChange: (v: boolean) => void
+  label: string
+  desc: string
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(!checked)}
+      className="flex w-full items-start gap-3 rounded-xl border border-[hsl(var(--border)/0.7)] bg-[hsl(var(--secondary)/0.4)] p-3 text-right transition hover:bg-[hsl(var(--secondary)/0.65)]"
+    >
+      <div
+        className={cn(
+          'mt-0.5 flex h-5 w-9 shrink-0 items-center rounded-full px-0.5 transition-colors duration-200',
+          checked ? 'justify-start bg-emerald-500' : 'justify-end bg-zinc-600'
+        )}
+        aria-checked={checked}
+        role="switch"
+      >
+        <span className="h-4 w-4 rounded-full bg-white shadow-sm transition-transform" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="text-[12px] font-medium text-[hsl(var(--foreground))]">{label}</p>
+        <p className="mt-0.5 text-[11px] leading-relaxed text-[hsl(var(--muted-foreground))]">{desc}</p>
+      </div>
+    </button>
+  )
 }
 
 export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.Element {
@@ -111,42 +146,6 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
   const charCount = memory.length
   const charPercent = Math.min(100, (charCount / MAX_MEMORY_CHARS) * 100)
 
-  const Toggle = ({
-    checked,
-    onChange,
-    label,
-    desc
-  }: {
-    checked: boolean
-    onChange: (v: boolean) => void
-    label: string
-    desc: string
-  }) => (
-    <button
-      type="button"
-      onClick={() => onChange(!checked)}
-      className="flex w-full items-start gap-3 rounded-xl border border-[hsl(var(--border)/0.7)] bg-[hsl(var(--secondary)/0.4)] p-3 text-right transition hover:bg-[hsl(var(--secondary)/0.65)]"
-    >
-      <div
-        className={cn(
-          'mt-0.5 flex h-5 w-9 shrink-0 items-center rounded-full px-0.5 transition',
-          checked ? 'bg-emerald-500' : 'bg-[hsl(var(--muted))]'
-        )}
-      >
-        <span
-          className={cn(
-            'h-4 w-4 rounded-full bg-white shadow transition',
-            checked ? 'translate-x-0' : 'translate-x-4'
-          )}
-        />
-      </div>
-      <div>
-        <p className="text-[12px] font-medium">{label}</p>
-        <p className="mt-0.5 text-[11px] text-[hsl(var(--muted-foreground))]">{desc}</p>
-      </div>
-    </button>
-  )
-
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <AnimatePresence mode="wait">
@@ -186,7 +185,7 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
                 <Inbox className="h-3.5 w-3.5 text-sky-400" />
                 دایرکت
               </h3>
-              <Toggle
+              <ToggleSwitch
                 checked={walkUnreadDms}
                 onChange={setWalkUnreadDms}
                 label="پیمایش خودکار خوانده‌نشده‌ها"
@@ -199,23 +198,23 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
                 <MessageSquare className="h-3.5 w-3.5 text-pink-400" />
                 کامنت و نوتیف
               </h3>
-              <Toggle
+              <ToggleSwitch
                 checked={replyOwnPostComments}
                 onChange={setReplyOwnPostComments}
                 label="پاسخ به کامنت پست‌های خودم"
                 desc="روی صفحه پست، کامنت‌های جدید را جواب می‌دهد."
               />
-              <Toggle
+              <ToggleSwitch
                 checked={replyMentions}
                 onChange={setReplyMentions}
                 label="پاسخ به منشن"
                 desc="اگر در کامنت منشن شدید پاسخ می‌دهد."
               />
-              <Toggle
+              <ToggleSwitch
                 checked={checkNotifications}
                 onChange={setCheckNotifications}
                 label="بررسی نوتیفیکیشن"
-                desc="بعد از دایرکت‌ها، صفحه فعالیت را برای کامنت/منشن چک می‌کند."
+                desc="صفحه فعالیت را برای کامنت و منشن چک می‌کند."
               />
             </section>
 
@@ -224,17 +223,17 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
                 <UserPlus className="h-3.5 w-3.5 text-emerald-400" />
                 فالوئر
               </h3>
-              <Toggle
+              <ToggleSwitch
                 checked={acceptFollowRequests}
                 onChange={setAcceptFollowRequests}
                 label="تأیید درخواست فالو"
                 desc="درخواست‌های معلّق را Confirm می‌کند."
               />
-              <Toggle
+              <ToggleSwitch
                 checked={followBack}
                 onChange={setFollowBack}
                 label="فالو بک بعد از تأیید"
-                desc="فقط وقتی گزینه بالا روشن باشد معنا دارد."
+                desc="فقط وقتی گزینه بالا روشن باشد."
               />
             </section>
 
@@ -245,11 +244,9 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
               {settingsSaved ? 'ذخیره شد' : 'ذخیره تنظیمات'}
             </button>
 
-            <div className="card space-y-2 text-[11px] leading-relaxed text-[hsl(var(--muted-foreground))]">
-              <p className="flex items-start gap-2">
-                <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sky-400" />
-                هر پیام فقط یک‌بار پاسخ داده می‌شود. cooldown دیگر به‌عنوان خطا تکرار ارسال نمی‌کند.
-              </p>
+            <div className="card flex gap-2 text-[11px] leading-relaxed text-[hsl(var(--muted-foreground))]">
+              <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sky-400" />
+              <p>سوییچ روشن = سبز و دایره سمت راست؛ خاموش = خاکستری و دایره سمت چپ.</p>
             </div>
           </motion.div>
         )}
@@ -270,10 +267,7 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
               <button
                 onClick={handleSaveMemory}
                 disabled={isSaving}
-                className={cn(
-                  'btn-primary !px-3 !py-1.5 !text-[11px]',
-                  saved && '!bg-emerald-500'
-                )}
+                className={cn('btn-primary !px-3 !py-1.5 !text-[11px]', saved && '!bg-emerald-500')}
               >
                 {saved ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Save className="h-3.5 w-3.5" />}
                 {saved ? 'ذخیره شد' : 'ذخیره'}
@@ -320,7 +314,7 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
                 {rulesSaved ? 'ذخیره شد' : 'ذخیره'}
               </button>
             </div>
-            <Toggle
+            <ToggleSwitch
               checked={keywordRulesEnabled}
               onChange={setKeywordRulesEnabled}
               label="فعال‌سازی قوانین"
@@ -330,7 +324,7 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
               <div key={rule.id} className="card space-y-2">
                 <div className="flex justify-between">
                   <span className="text-[11px] text-[hsl(var(--muted-foreground))]">قانون {idx + 1}</span>
-                  <button onClick={() => setRules((r) => r.filter((x) => x.id !== rule.id))}>
+                  <button type="button" onClick={() => setRules((r) => r.filter((x) => x.id !== rule.id))}>
                     <Trash2 className="h-3.5 w-3.5 text-red-400" />
                   </button>
                 </div>
@@ -367,6 +361,7 @@ export default function SettingsPanel({ activeTab }: SettingsPanelProps): JSX.El
               </div>
             ))}
             <button
+              type="button"
               onClick={() => setRules((r) => [...r, newRule()])}
               className="btn-ghost flex w-full items-center justify-center gap-2 border border-dashed border-[hsl(var(--border))] py-2 text-[12px]"
             >

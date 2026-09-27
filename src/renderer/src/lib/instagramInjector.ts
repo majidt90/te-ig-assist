@@ -1,5 +1,5 @@
 /**
- * Instagram guest injector — DMs, comments, inbox walk, activity, follow requests.
+ * Instagram guest injector — improved unread + activity detection.
  */
 
 export const INJECTOR_SOURCE = `
@@ -16,7 +16,7 @@ export const INJECTOR_SOURCE = `
   function path() { return location.pathname || ''; }
   function isDirectPage() { return /\\/direct\\//i.test(path()); }
   function isPostPage() { return /\\/(p|reel)\\//i.test(path()); }
-  function isInbox() { return /\\/direct\\/inbox/i.test(path()) || path() === '/direct/'; }
+  function isInbox() { return /\\/direct\\/(inbox)?\\/?$/i.test(path()) || path() === '/direct'; }
   function isThread() { return /\\/direct\\/t\\//i.test(path()); }
 
   function fingerprint(text, extra) {
@@ -34,6 +34,27 @@ export const INJECTOR_SOURCE = `
       var vw = window.innerWidth || 800;
       if (rect.left + rect.width / 2 > vw * 0.52) return true;
     } catch (e) {}
+    return false;
+  }
+
+  function hasBlueUnreadIndicator(root) {
+    var nodes = root.querySelectorAll('div, span');
+    for (var i = 0; i < Math.min(nodes.length, 40); i++) {
+      var el = nodes[i];
+      try {
+        var st = window.getComputedStyle(el);
+        var bg = st.backgroundColor || '';
+        var w = parseFloat(st.width) || 0;
+        var h = parseFloat(st.height) || 0;
+        // IG unread dot ~8px blue circle
+        if (w >= 4 && w <= 14 && h >= 4 && h <= 14) {
+          if (bg.indexOf('0, 149, 246') !== -1 || bg.indexOf('0,149,246') !== -1 ||
+              bg.indexOf('55, 151, 240') !== -1 || bg.indexOf('0, 55, 107') !== -1) {
+            return true;
+          }
+        }
+      } catch (e) {}
+    }
     return false;
   }
 
@@ -55,7 +76,6 @@ export const INJECTOR_SOURCE = `
         var text = (el.innerText || '').trim();
         if (!text || text.length > 1500) continue;
         if (/^(Send|ارسال|Like|Seen|Active|Message)/i.test(text)) continue;
-        // skip our own last sent text fragments
         if (lastSentText && text.indexOf(lastSentText.slice(0, 40)) !== -1) continue;
         out.push({ el: el, text: text });
       }
@@ -145,64 +165,123 @@ export const INJECTOR_SOURCE = `
     };
   };
 
-  /** List unread threads in inbox (left column) */
+  /** Unread threads in inbox */
   window.__TE_IG_LIST_UNREAD__ = function () {
     var items = [];
-    // Conversation rows in inbox
-    var rows = document.querySelectorAll('div[role="listbox"] div[role="button"], a[href*="/direct/t/"], div[role="list"] a[href*="/direct/t/"]');
-    if (!rows.length) {
-      rows = document.querySelectorAll('a[href*="/direct/t/"]');
-    }
     var seenHref = {};
-    for (var i = 0; i < rows.length; i++) {
-      var row = rows[i];
-      var href = row.getAttribute('href') || '';
-      if (!href) {
-        var a = row.querySelector('a[href*="/direct/t/"]');
-        if (a) href = a.getAttribute('href') || '';
-      }
+
+    // Prefer anchors to threads
+    var anchors = document.querySelectorAll('a[href*="/direct/t/"]');
+    for (var i = 0; i < anchors.length; i++) {
+      var a = anchors[i];
+      var href = a.getAttribute('href') || '';
       if (!href || seenHref[href]) continue;
       seenHref[href] = true;
 
-      // Unread heuristics: bold text, blue dot, aria
-      var text = (row.innerText || '').trim();
-      var hasUnreadDot = !!row.querySelector('[class*="x1rg5ohu"], span[style*="background"], div[style*="rgb(0, 149, 246)"]');
-      var fontWeight = '';
-      try {
-        var strong = row.querySelector('span, div');
-        if (strong) fontWeight = window.getComputedStyle(strong).fontWeight || '';
-      } catch (e) {}
-      var isBold = parseInt(fontWeight, 10) >= 600 || fontWeight === 'bold';
-      var aria = (row.getAttribute('aria-label') || '') + ' ' + text;
-      var unreadWord = /unread|خوانده|جدید/i.test(aria);
-
-      // Also treat rows with blue unread indicator children
-      var blue = false;
-      var dots = row.querySelectorAll('div, span');
-      for (var d = 0; d < Math.min(dots.length, 30); d++) {
-        try {
-          var bg = window.getComputedStyle(dots[d]).backgroundColor || '';
-          if (bg.indexOf('0, 149, 246') !== -1 || bg.indexOf('0,149,246') !== -1) { blue = true; break; }
-        } catch (e2) {}
+      // Walk up to conversation row
+      var row = a;
+      for (var up = 0; up < 6; up++) {
+        if (!row.parentElement) break;
+        row = row.parentElement;
+        if (row.getAttribute && (row.getAttribute('role') === 'button' || row.getAttribute('role') === 'listitem')) break;
       }
 
-      if (hasUnreadDot || isBold || unreadWord || blue) {
-        items.push({ href: href, preview: text.slice(0, 80), index: items.length });
+      var text = (row.innerText || a.innerText || '').trim();
+      var blue = hasBlueUnreadIndicator(row);
+      var bold = false;
+      try {
+        var spans = row.querySelectorAll('span');
+        for (var s = 0; s < Math.min(spans.length, 12); s++) {
+          var fw = window.getComputedStyle(spans[s]).fontWeight || '';
+          if (parseInt(fw, 10) >= 600 || fw === 'bold') { bold = true; break; }
+        }
+      } catch (e) {}
+
+      var aria = (row.getAttribute('aria-label') || '') + ' ' + (a.getAttribute('aria-label') || '');
+      var unreadHint = /unread|خوانده|جدید|new message/i.test(aria + ' ' + text);
+
+      // Include if unread signals OR (fallback) first 8 conversations when any signal weak
+      if (blue || bold || unreadHint) {
+        items.push({ href: href, preview: text.replace(/\\s+/g, ' ').slice(0, 90), index: items.length, reason: blue ? 'dot' : bold ? 'bold' : 'aria' });
       }
     }
+
+    // Fallback: if nothing flagged, take top conversations (user says they have msgs)
+    if (items.length === 0) {
+      seenHref = {};
+      var all = document.querySelectorAll('a[href*="/direct/t/"]');
+      for (var j = 0; j < all.length && items.length < 6; j++) {
+        var href2 = all[j].getAttribute('href') || '';
+        if (!href2 || seenHref[href2]) continue;
+        seenHref[href2] = true;
+        var prev = (all[j].innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 90);
+        items.push({ href: href2, preview: prev, index: items.length, reason: 'fallback_top' });
+      }
+    }
+
     return items;
   };
 
   window.__TE_IG_OPEN_HREF__ = function (href) {
     if (!href) return false;
     if (href.indexOf('http') === 0) location.href = href;
-    else location.href = 'https://www.instagram.com' + href;
+    else location.href = 'https://www.instagram.com' + (href.charAt(0) === '/' ? href : '/' + href);
     return true;
   };
 
   window.__TE_IG_GOTO__ = function (urlPath) {
     location.href = 'https://www.instagram.com' + urlPath;
     return true;
+  };
+
+  /**
+   * Activity / notifications feed — comments, mentions, replies.
+   * Matches rows like "mentioned you in a comment", "replied to your comment".
+   */
+  window.__TE_IG_LIST_ACTIVITY__ = function () {
+    var out = [];
+    var seen = {};
+
+    // Strategy 1: links to posts/reels inside activity rows
+    var links = document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]');
+    for (var i = 0; i < links.length; i++) {
+      var link = links[i];
+      var href = link.getAttribute('href') || '';
+      if (!href || seen[href]) continue;
+
+      var row = link.closest('div[role="button"]') || link.closest('a') || link.parentElement;
+      var text = '';
+      try {
+        text = (row && row.innerText ? row.innerText : link.innerText || '').replace(/\\s+/g, ' ').trim();
+      } catch (e) { text = ''; }
+
+      var interesting = /mention|mentioned|comment|replied|tagged|کامنت|منشن|پاسخ|ذکر|تگ|replied to your/i.test(text);
+      // Always include post links on activity pages; prefer interesting ones first
+      seen[href] = true;
+      out.push({
+        href: href,
+        text: text.slice(0, 140),
+        isComment: interesting || true,
+        score: interesting ? 2 : 1
+      });
+    }
+
+    // Strategy 2: clickable rows without direct /p/ in outer link
+    var rows = document.querySelectorAll('div[role="button"]');
+    for (var r = 0; r < rows.length; r++) {
+      var rowEl = rows[r];
+      var t = (rowEl.innerText || '').replace(/\\s+/g, ' ').trim();
+      if (!/mention|mentioned|comment|replied|tagged|کامنت|منشن|پاسخ/i.test(t)) continue;
+      var inner = rowEl.querySelector('a[href*="/p/"], a[href*="/reel/"]');
+      if (!inner) continue;
+      var h = inner.getAttribute('href') || '';
+      if (!h || seen[h]) continue;
+      seen[h] = true;
+      out.push({ href: h, text: t.slice(0, 140), isComment: true, score: 3 });
+    }
+
+    out.sort(function (a, b) { return (b.score || 0) - (a.score || 0); });
+    return out.slice(0, 12);
   };
 
   function fillAndSend(box, text) {
@@ -231,21 +310,14 @@ export const INJECTOR_SOURCE = `
   window.__TE_IG_SEND_REPLY__ = async function (text) {
     if (!text) return { ok: false, reason: 'empty' };
     var now = Date.now();
-
-    // Same text within gap → already sent
-    if (lastSentText === text && now - lastSendAt < 15000) {
-      return { ok: true, reason: 'already_sent' };
-    }
-    if (now - lastSendAt < MIN_SEND_GAP_MS) {
-      return { ok: true, reason: 'cooldown_ok' }; // treat as success to stop retries
-    }
+    if (lastSentText === text && now - lastSendAt < 15000) return { ok: true, reason: 'already_sent' };
+    if (now - lastSendAt < MIN_SEND_GAP_MS) return { ok: true, reason: 'cooldown_ok' };
 
     var box =
       document.querySelector('div[role="textbox"][contenteditable="true"]') ||
       document.querySelector('[contenteditable="true"][role="textbox"]') ||
       document.querySelector('div[contenteditable="true"]') ||
       document.querySelector('textarea');
-
     if (!box) return { ok: false, reason: 'no_compose' };
 
     fillAndSend(box, text);
@@ -253,9 +325,7 @@ export const INJECTOR_SOURCE = `
 
     var sendBtn =
       document.querySelector('[aria-label="Send"]') ||
-      document.querySelector('[aria-label="ارسال"]') ||
-      document.querySelector('div[role="button"][aria-label*="Send" i]');
-
+      document.querySelector('[aria-label="ارسال"]');
     if (!sendBtn) {
       var buttons = Array.from(document.querySelectorAll('div[role="button"], button'));
       sendBtn = buttons.find(function (b) {
@@ -263,19 +333,15 @@ export const INJECTOR_SOURCE = `
         return /^(Send|ارسال)$/i.test(t);
       }) || null;
     }
-
     if (sendBtn) sendBtn.click();
     else {
       try {
         box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
       } catch (e) {}
     }
-
     lastSendAt = Date.now();
     lastSentText = text;
-    // Mark our reply so it is never treated as incoming
     markSeen(fingerprint(text, 'dm'));
-    markSeen(fingerprint(text, 'out'));
     return { ok: true };
   };
 
@@ -306,7 +372,6 @@ export const INJECTOR_SOURCE = `
     return { ok: true };
   };
 
-  /** Accept visible follow requests on current page */
   window.__TE_IG_ACCEPT_FOLLOWS__ = async function (followBack) {
     var accepted = 0;
     var buttons = Array.from(document.querySelectorAll('button, div[role="button"]'));
@@ -319,7 +384,6 @@ export const INJECTOR_SOURCE = `
       }
     }
     if (followBack) {
-      // After accept, Follow back buttons may appear
       await new Promise(function (r) { setTimeout(r, 800); });
       buttons = Array.from(document.querySelectorAll('button, div[role="button"]'));
       for (var j = 0; j < buttons.length; j++) {
@@ -333,24 +397,24 @@ export const INJECTOR_SOURCE = `
     return { ok: true, accepted: accepted };
   };
 
-  /** Collect notification-like links (comments / mentions) from activity page */
-  window.__TE_IG_LIST_ACTIVITY__ = function () {
-    var out = [];
-    var links = document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]');
-    var seen = {};
-    for (var i = 0; i < links.length; i++) {
-      var href = links[i].getAttribute('href') || '';
-      if (!href || seen[href]) continue;
-      seen[href] = true;
-      var text = (links[i].innerText || links[i].closest('div') && links[i].closest('div').innerText || '').trim();
-      var isComment = /comment|کامنت|ذکر|mention|tagged|تگ/i.test(text);
-      out.push({ href: href, text: text.slice(0, 120), isComment: isComment });
+  // Click heart / notifications in nav if present
+  window.__TE_IG_OPEN_ACTIVITY_UI__ = function () {
+    var links = document.querySelectorAll('a[href="/accounts/activity/"], a[href*="activity"], a[href="/notifications/"]');
+    if (links.length) { links[0].click(); return true; }
+    // SVG heart in nav
+    var nav = document.querySelectorAll('a[role="link"], div[role="link"]');
+    for (var i = 0; i < nav.length; i++) {
+      var al = (nav[i].getAttribute('aria-label') || '') + ' ' + (nav[i].innerText || '');
+      if (/notification|activity|فعالیت|اعلان/i.test(al)) {
+        nav[i].click();
+        return true;
+      }
     }
-    return out.slice(0, 15);
+    location.href = 'https://www.instagram.com/accounts/activity/';
+    return true;
   };
 
   try { scan(); } catch (e) {}
-
   if (!window.__TE_IG_OBSERVER__) {
     var obs = new MutationObserver(function () { try { scan(); } catch (e) {} });
     if (document.body) obs.observe(document.body, { childList: true, subtree: true });
