@@ -1,13 +1,17 @@
 import { useState, useEffect } from 'react'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import { motion } from 'framer-motion'
-import { Settings, Brain, Power, Instagram, Zap, Play, Timer, RefreshCw } from 'lucide-react'
+import { Settings, Brain, Power, Zap, Play, Timer, RefreshCw, Info } from 'lucide-react'
 import InstagramPanel from './components/InstagramPanel'
 import SettingsPanel from './components/SettingsPanel'
+import AboutPanel from './components/AboutPanel'
+import LicenseGate from './components/LicenseGate'
+import { AppMark } from './components/AboutPanel'
 import { cn } from './lib/utils'
 import { autoReplyController } from './lib/autoReplyController'
+import { validateLicenseWithLock } from './lib/license'
 
-type TabId = 'settings' | 'memory' | 'rules'
+export type TabId = 'settings' | 'memory' | 'rules' | 'about'
 
 function App(): JSX.Element {
   const [activeTab, setActiveTab] = useState<TabId>('settings')
@@ -15,19 +19,32 @@ function App(): JSX.Element {
   const [autoCycle, setAutoCycle] = useState(true)
   const [cycleMinutes, setCycleMinutes] = useState(1)
   const [isReady, setIsReady] = useState(false)
+  const [licensed, setLicensed] = useState(false)
 
   useEffect(() => {
     void (async () => {
-      const [en, cycle, interval] = await Promise.all([
+      const [en, cycle, interval, activated, u, e, lock, key] = await Promise.all([
         window.api.getStore('autoReplyEnabled'),
         window.api.getStore('autoCycle'),
-        window.api.getStore('cycleIntervalMs')
+        window.api.getStore('cycleIntervalMs'),
+        window.api.getStore('licenseActivated'),
+        window.api.getStore('licenseUsername'),
+        window.api.getStore('licenseEmail'),
+        window.api.getStore('licenseLock'),
+        window.api.getStore('licenseKey')
       ])
       setAutoReplyEnabled(Boolean(en))
       setAutoCycle(cycle !== false)
       if (typeof interval === 'number') setCycleMinutes(Math.max(0.25, interval / 60000))
       autoReplyController.setAutoCycle(cycle !== false)
       if (typeof interval === 'number') autoReplyController.setCycleIntervalMs(interval)
+
+      if (activated && typeof u === 'string' && typeof e === 'string' && typeof lock === 'string' && typeof key === 'string') {
+        const ok = await validateLicenseWithLock(u, e, lock, key)
+        setLicensed(ok.ok)
+      } else {
+        setLicensed(false)
+      }
       setIsReady(true)
     })()
   }, [])
@@ -64,31 +81,29 @@ function App(): JSX.Element {
           animate={{ opacity: 1, scale: 1 }}
           className="flex flex-col items-center gap-5"
         >
-          <div className="relative">
-            <div className="h-12 w-12 rounded-2xl bg-gradient-to-br from-purple-500 to-pink-500 shadow-lg shadow-purple-500/30" />
-            <div className="absolute inset-0 animate-ping rounded-2xl bg-purple-500/30" />
-          </div>
-          <p className="text-sm font-medium text-[hsl(var(--muted-foreground))]">
-            در حال آماده‌سازی دستیار...
-          </p>
+          <AppMark className="h-14 w-14" />
+          <p className="text-sm font-medium text-[hsl(var(--muted-foreground))]">در حال آماده‌سازی…</p>
         </motion.div>
       </div>
     )
   }
 
+  if (!licensed) {
+    return <LicenseGate onActivated={() => setLicensed(true)} />
+  }
+
   const tabs: { id: TabId; label: string; icon: typeof Settings }[] = [
     { id: 'settings', label: 'تنظیمات', icon: Settings },
     { id: 'memory', label: 'حافظه', icon: Brain },
-    { id: 'rules', label: 'قوانین', icon: Zap }
+    { id: 'rules', label: 'قوانین', icon: Zap },
+    { id: 'about', label: 'درباره', icon: Info }
   ]
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden">
       <header className="panel-glass z-20 flex h-13 shrink-0 items-center justify-between gap-2 px-3">
         <div className="flex items-center gap-2.5">
-          <div className="relative flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br from-purple-500 via-fuchsia-500 to-pink-500 shadow-md shadow-purple-500/25">
-            <Instagram className="h-4 w-4 text-white" strokeWidth={2.2} />
-          </div>
+          <AppMark className="h-8 w-8" />
           <div className="leading-tight">
             <h1 className="text-[13px] font-semibold tracking-tight">TE IG Assist</h1>
             <p className="text-[10px] text-[hsl(var(--muted-foreground))]">دستیار حرفه‌ای اینستاگرام</p>
@@ -135,7 +150,6 @@ function App(): JSX.Element {
                 ? 'bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30 hover:bg-sky-500/25'
                 : 'cursor-not-allowed bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))] opacity-50'
             )}
-            title="اجرای فوری قابلیت‌های فعال"
           >
             <Play className="h-3.5 w-3.5" />
             اجرا فورس
@@ -149,7 +163,6 @@ function App(): JSX.Element {
                 ? 'bg-violet-500/15 text-violet-300 ring-1 ring-violet-500/30'
                 : 'bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))]'
             )}
-            title="چرخه خودکار دوره‌ای"
           >
             <RefreshCw className={cn('h-3.5 w-3.5', autoCycle && 'animate-spin-slow')} />
             {autoCycle ? 'اتوماتیک' : 'دستی'}
@@ -165,7 +178,6 @@ function App(): JSX.Element {
               value={cycleMinutes}
               onChange={(e) => void onCycleMinutesChange(Number(e.target.value) || 1)}
               className="w-10 border-0 bg-transparent text-center text-[11px] outline-none"
-              title="فاصله چرخه (دقیقه)"
             />
             <span className="text-[hsl(var(--muted-foreground))]">دقیقه</span>
           </div>
@@ -196,7 +208,7 @@ function App(): JSX.Element {
                   key={id}
                   onClick={() => setActiveTab(id)}
                   className={cn(
-                    'relative flex flex-1 items-center justify-center gap-1.5 py-3 text-[11px] font-medium transition-colors',
+                    'relative flex flex-1 items-center justify-center gap-1 py-3 text-[10px] font-medium transition-colors',
                     activeTab === id
                       ? 'text-[hsl(var(--primary))]'
                       : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'
@@ -215,7 +227,7 @@ function App(): JSX.Element {
               ))}
             </div>
             <div className="flex-1 overflow-hidden">
-              <SettingsPanel activeTab={activeTab} />
+              {activeTab === 'about' ? <AboutPanel /> : <SettingsPanel activeTab={activeTab} />}
             </div>
           </div>
         </Panel>

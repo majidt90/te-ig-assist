@@ -25,6 +25,11 @@ const store = new Store({
     dmListMode: 'off',
     dmUserList: [],
     keywordRules: [],
+    licenseActivated: false,
+    licenseUsername: '',
+    licenseEmail: '',
+    licenseLock: '',
+    licenseKey: '',
     windowBounds: { width: 1400, height: 900 }
   }
 })
