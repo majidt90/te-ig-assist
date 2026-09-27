@@ -8,6 +8,8 @@ const store = new Store({
     memory: '',
     logic: '',
     autoReplyEnabled: false,
+    autoCycle: true,
+    cycleIntervalMs: 60_000,
     autoReplyDms: true,
     autoReplyComments: true,
     autoReplyNotifications: true,
