@@ -18,9 +18,7 @@ export interface FeatureFlags {
   walkUnreadDms: boolean
   acceptFollowRequests: boolean
   followBack: boolean
-  /** Queue and reply every unanswered message in a thread, not only the last */
   replyAllInThread: boolean
-  /** Require user approve before sending */
   previewBeforeSend: boolean
 }
 
@@ -37,7 +35,6 @@ export interface DmFilter {
 
 export interface SafetySettings {
   workingHoursEnabled: boolean
-  /** Local hour 0-23 */
   workStartHour: number
   workEndHour: number
   dailyLimitEnabled: boolean
@@ -79,17 +76,14 @@ export const DEFAULT_SAFETY: SafetySettings = {
   dailyLimitComment: 30
 }
 
-/** Strip @ and lowercase */
 export function normalizeUsername(u: string): string {
   return u.trim().replace(/^@+/, '').toLowerCase()
 }
 
-/** Collapse handles for fuzzy compare: _maryam.zamani_ ≈ maryamzamani ≈ m-a-r-y-a-m partially */
 export function compactUsername(u: string): string {
   return normalizeUsername(u).replace(/[._\-\s]/g, '')
 }
 
-/** True if two handles refer to the same person (exact or compact match) */
 export function usernamesMatch(a: string | undefined, b: string | undefined): boolean {
   const na = normalizeUsername(a || '')
   const nb = normalizeUsername(b || '')
@@ -99,24 +93,21 @@ export function usernamesMatch(a: string | undefined, b: string | undefined): bo
   const cb = compactUsername(nb)
   if (!ca || !cb) return false
   if (ca === cb) return true
-  // one contains the other (min length 4 to avoid tiny false positives)
   if (ca.length >= 4 && cb.length >= 4) {
     if (ca.includes(cb) || cb.includes(ca)) return true
   }
   return false
 }
 
-/** True if username matches any entry in list */
 export function usernameInList(username: string | undefined, list: string[]): boolean {
   if (!username || !list.length) return false
   return list.some((entry) => usernamesMatch(username, entry))
 }
 
 /**
- * DM filter decision.
  * - off: always allow
- * - whitelist: only listed users (unknown username → deny)
- * - blacklist: block listed users (unknown username → allow, but prefer passing all known aliases)
+ * - whitelist: only listed (unknown → deny)
+ * - blacklist: block listed (unknown → allow — do not reject @؟)
  */
 export function isDmUserAllowed(
   username: string | undefined,
@@ -125,22 +116,21 @@ export function isDmUserAllowed(
 ): boolean {
   if (filter.mode === 'off') return true
   const list = (filter.users || []).map(normalizeUsername).filter(Boolean)
-  if (!list.length) return filter.mode === 'blacklist'
+  if (!list.length) return true
 
   const candidates = [username, ...extraCandidates]
     .map((x) => normalizeUsername(x || ''))
     .filter(Boolean)
 
   if (!candidates.length) {
-    // whitelist needs identity; blacklist without identity → deny to be safe when list is non-empty
-    return false
+    // whitelist needs identity; blacklist without identity → allow
+    return filter.mode === 'blacklist'
   }
 
   const hit = candidates.some((c) => usernameInList(c, list))
   return filter.mode === 'whitelist' ? hit : !hit
 }
 
-/** Extract best-effort IG username candidates from inbox preview / header text */
 export function extractUsernameFromPreview(preview: string): string {
   const candidates = extractUsernameCandidates(preview)
   return candidates[0] || ''
@@ -153,26 +143,29 @@ export function extractUsernameCandidates(preview: string): string[] {
   const push = (v: string) => {
     const n = normalizeUsername(v)
     if (!n || n.length < 2 || n.length > 30) return
-    if (/^(unread|new|reacted|you|sent|messages?|active|online|attachment|seen)$/i.test(n)) return
+    if (/^(unread|new|reacted|you|sent|messages?|active|online|attachment|seen|liked)$/i.test(n)) return
     if (!out.includes(n)) out.push(n)
   }
 
-  // 1) @handle
   for (const m of t.matchAll(/@([A-Za-z0-9._]{2,30})/g)) push(m[1])
 
-  // 2) underscore-style handles like _maryam.zamani_
+  // English handle anywhere: Bizhannouri, m.r.tavoosi
+  for (const m of t.matchAll(/\b([A-Za-z][A-Za-z0-9._]{1,28})\b/g)) {
+    const w = m[1]
+    if (/^(Unread|Reacted|You|Sent|Messages?|Active|Online|Attachment|Liked|Message)$/i.test(w)) continue
+    push(w)
+  }
+
   for (const m of t.matchAll(/\b(_?[A-Za-z][A-Za-z0-9._]{1,28}_?)\b/g)) {
     if (m[1].includes('.') || m[1].includes('_')) push(m[1])
   }
 
-  // 3) first tokens
   const tokens = t.split(' ')
-  for (const tok of tokens.slice(0, 6)) {
+  for (const tok of tokens.slice(0, 8)) {
     const x = tok.replace(/^@/, '').replace(/[^a-zA-Z0-9._-]/g, '')
     if (/^[A-Za-z0-9._-]{2,30}$/.test(x)) push(x)
   }
 
-  // 4) collapsed display name → slug (m-a-r-y-a-m, Bizhannouri)
   const namePart = t.split(/·|•|sent|Reacted|Unread|new message/i)[0]?.trim() || ''
   const slug = namePart
     .replace(/[^a-zA-Z0-9._\s-]/g, '')
@@ -184,7 +177,6 @@ export function extractUsernameCandidates(preview: string): string[] {
   return out
 }
 
-/** Within working hours? supports overnight ranges (e.g. 22→8) */
 export function isWithinWorkingHours(
   enabled: boolean,
   startHour: number,
@@ -197,7 +189,6 @@ export function isWithinWorkingHours(
   const e = Math.max(0, Math.min(23, endHour))
   if (s === e) return true
   if (s < e) return h >= s && h < e
-  // overnight: e.g. 22 → 8
   return h >= s || h < e
 }
 
