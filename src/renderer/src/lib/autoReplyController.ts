@@ -40,7 +40,6 @@ export class AutoReplyController {
   private keywordRules: KeywordRule[] = []
   private pendingDmAfterNav: { username: string; text: string } | null = null
 
-  /** Orchestrator */
   private phase: CyclePhase = 'idle'
   private cycleRunning = false
   private lastCycleAt = 0
@@ -100,7 +99,7 @@ export class AutoReplyController {
     this.webview = webview
     this.injectorSource = injectorSource
     if (this.pollTimer) clearInterval(this.pollTimer)
-    this.pollTimer = setInterval(() => void this.tick(), 1800)
+    this.pollTimer = setInterval(() => void this.tick(), 2000)
   }
 
   unbindWebview(): void {
@@ -149,17 +148,17 @@ export class AutoReplyController {
         this.pendingDmAfterNav = null
       }
 
-      // Pull new events from open thread / post
-      const batch = (await this.exec<
-        Array<{
-          id: string
-          text: string
-          kind: string
-          username?: string
-          isMention?: boolean
-          path?: string
-        }>
-      >('window.__TE_IG_POLL__ ? window.__TE_IG_POLL__() : []')) || []
+      const batch =
+        (await this.exec<
+          Array<{
+            id: string
+            text: string
+            kind: string
+            username?: string
+            isMention?: boolean
+            path?: string
+          }>
+        >('window.__TE_IG_POLL__ ? window.__TE_IG_POLL__() : []')) || []
 
       for (const item of batch) {
         if (item.kind === 'dm_incoming') {
@@ -184,7 +183,6 @@ export class AutoReplyController {
 
       await this.processQueue()
 
-      // Background orchestration when enabled and queue empty
       if (this.enabled && !this.processing && this.queue.length === 0) {
         await this.runCycleStep(status)
       }
@@ -193,32 +191,35 @@ export class AutoReplyController {
     }
   }
 
-  private async runCycleStep(status: { path?: string; inbox?: boolean; thread?: boolean } | null): Promise<void> {
+  private async runCycleStep(_status: { path?: string; inbox?: boolean; thread?: boolean } | null): Promise<void> {
     if (this.cycleRunning) return
-    // Full cycle at most every 45s when idle on inbox
     const now = Date.now()
 
     this.cycleRunning = true
     try {
       if (this.phase === 'idle' || this.phase === 'listening') {
-        if (now - this.lastCycleAt < 45000 && this.phase === 'listening') return
+        if (now - this.lastCycleAt < 50000 && this.phase === 'listening') return
         this.lastCycleAt = now
 
         if (this.flags.walkUnreadDms) {
           this.phase = 'unread_dms'
           this.pushActivity('info', 'بررسی دایرکت‌های خوانده‌نشده…')
           await this.exec('window.__TE_IG_GOTO__ && window.__TE_IG_GOTO__("/direct/inbox/")')
-          await sleep(2500)
+          await sleep(3500)
           const unread =
-            (await this.exec<Array<{ href: string; preview: string }>>(
+            (await this.exec<Array<{ href: string; preview: string; reason?: string }>>(
               'window.__TE_IG_LIST_UNREAD__ ? window.__TE_IG_LIST_UNREAD__() : []'
             )) || []
           this.unreadQueue = unread
           if (unread.length) {
-            this.pushActivity('info', `${unread.length} گفتگوی خوانده‌نشده پیدا شد`)
+            this.pushActivity('info', `${unread.length} گفتگو برای بررسی پیدا شد`)
           } else {
-            this.pushActivity('info', 'دایرکت خوانده‌نشده‌ای نیست')
-            this.phase = this.flags.checkNotifications ? 'notifications' : this.flags.acceptFollowRequests ? 'follows' : 'listening'
+            this.pushActivity('info', 'گفتگویی در inbox پیدا نشد')
+            this.phase = this.flags.checkNotifications
+              ? 'notifications'
+              : this.flags.acceptFollowRequests
+                ? 'follows'
+                : 'listening'
           }
         } else if (this.flags.checkNotifications) {
           this.phase = 'notifications'
@@ -231,48 +232,50 @@ export class AutoReplyController {
 
       if (this.phase === 'unread_dms' && this.unreadQueue.length > 0) {
         const next = this.unreadQueue.shift()!
-        this.pushActivity('info', `باز کردن گفتگو: ${next.preview.slice(0, 40)}…`)
+        this.pushActivity('info', `باز کردن گفتگو: ${next.preview.slice(0, 42)}…`)
         await this.exec(`window.__TE_IG_OPEN_HREF__ && window.__TE_IG_OPEN_HREF__(${JSON.stringify(next.href)})`)
-        await sleep(2800)
-        // messages will be polled into queue; processQueue handles replies
-        // after short wait, if no queue items, continue
-        await sleep(2000)
-        if (this.queue.length === 0 && this.unreadQueue.length === 0) {
-          this.phase = this.flags.checkNotifications ? 'notifications' : 'listening'
-        }
+        await sleep(3500)
+        // allow a few poll ticks to enqueue messages
         return
       }
 
       if (this.phase === 'unread_dms' && this.unreadQueue.length === 0) {
-        this.phase = this.flags.checkNotifications ? 'notifications' : this.flags.acceptFollowRequests ? 'follows' : 'listening'
+        this.phase = this.flags.checkNotifications
+          ? 'notifications'
+          : this.flags.acceptFollowRequests
+            ? 'follows'
+            : 'listening'
       }
 
       if (this.phase === 'notifications') {
         this.pushActivity('info', 'بررسی نوتیفیکیشن / فعالیت…')
-        // Instagram activity is often under heart icon — try common paths
-        await this.exec('window.__TE_IG_GOTO__ && window.__TE_IG_GOTO__("/accounts/activity/")')
-        await sleep(2500)
-        // fallback: some locales use notifications
+        // Prefer clicking heart icon (same UI user sees)
+        await this.exec('window.__TE_IG_OPEN_ACTIVITY_UI__ && window.__TE_IG_OPEN_ACTIVITY_UI__()')
+        await sleep(3500)
+
         let acts =
           (await this.exec<Array<{ href: string; text: string; isComment?: boolean }>>(
             'window.__TE_IG_LIST_ACTIVITY__ ? window.__TE_IG_LIST_ACTIVITY__() : []'
           )) || []
+
         if (!acts.length) {
-          await this.exec('window.__TE_IG_GOTO__ && window.__TE_IG_GOTO__("/notifications/")')
-          await sleep(2000)
+          await this.exec('window.__TE_IG_GOTO__ && window.__TE_IG_GOTO__("/accounts/activity/")')
+          await sleep(3000)
           acts =
             (await this.exec<Array<{ href: string; text: string; isComment?: boolean }>>(
               'window.__TE_IG_LIST_ACTIVITY__ ? window.__TE_IG_LIST_ACTIVITY__() : []'
             )) || []
         }
-        this.activityQueue = acts.filter((a) => a.isComment !== false).slice(0, 8)
+
+        this.activityQueue = acts.slice(0, 8)
         if (this.activityQueue.length) {
-          this.pushActivity('info', `${this.activityQueue.length} مورد فعالیت مرتبط پیدا شد`)
+          this.pushActivity('info', `${this.activityQueue.length} مورد فعالیت پیدا شد`)
           const a = this.activityQueue.shift()!
+          this.pushActivity('info', `باز کردن: ${a.text.slice(0, 50)}…`)
           await this.exec(`window.__TE_IG_OPEN_HREF__ && window.__TE_IG_OPEN_HREF__(${JSON.stringify(a.href)})`)
-          await sleep(2500)
+          await sleep(3500)
         } else {
-          this.pushActivity('info', 'نوتیفیکیشن کامنت/منشن جدیدی دیده نشد')
+          this.pushActivity('warn', 'در صفحه فعالیت لینک پست/کامنت پیدا نشد — UI اینستاگرام ممکن است عوض شده باشد')
         }
         this.phase = this.flags.acceptFollowRequests ? 'follows' : 'listening'
         return
@@ -280,19 +283,27 @@ export class AutoReplyController {
 
       if (this.phase === 'follows') {
         this.pushActivity('info', 'بررسی درخواست‌های فالو…')
-        await this.exec('window.__TE_IG_GOTO__ && window.__TE_IG_GOTO__("/accounts/activity/")')
-        await sleep(1500)
-        // Also try follow requests URL patterns
-        await this.exec('window.__TE_IG_GOTO__ && window.__TE_IG_GOTO__("/accounts/login/")').catch?.(() => {})
-        // Best effort: stay on activity and click Confirm
+        await this.exec('window.__TE_IG_OPEN_ACTIVITY_UI__ && window.__TE_IG_OPEN_ACTIVITY_UI__()')
+        await sleep(2500)
+        // Click "Follow requests" row if visible
+        await this.exec(`
+          (function(){
+            var nodes = Array.from(document.querySelectorAll('div[role="button"], a, span'));
+            var row = nodes.find(function(n){
+              var t = (n.innerText || '').trim();
+              return /Follow requests|درخواست‌های دنبال|درخواست فالو/i.test(t);
+            });
+            if (row) row.click();
+          })()
+        `)
+        await sleep(2000)
         const res = await this.exec<{ accepted?: number }>(
           `window.__TE_IG_ACCEPT_FOLLOWS__ ? window.__TE_IG_ACCEPT_FOLLOWS__(${this.flags.followBack ? 'true' : 'false'}) : ({accepted:0})`
         )
         const n = res?.accepted || 0
         if (n > 0) this.pushActivity('success', `${n} درخواست فالو تأیید شد`)
-        else this.pushActivity('info', 'درخواست فالو معلقی پیدا نشد')
+        else this.pushActivity('info', 'دکمه Confirm روی صفحه دیده نشد')
         this.phase = 'listening'
-        // return to inbox
         await this.exec('window.__TE_IG_GOTO__ && window.__TE_IG_GOTO__("/direct/inbox/")')
       }
     } finally {
@@ -304,19 +315,14 @@ export class AutoReplyController {
     if (this.repliedIds.has(item.id)) return
     if (this.inFlightIds.has(item.id)) return
     if (this.queue.some((q) => q.id === item.id)) return
-    // Extra dedupe by normalized text for DMs
     if (item.channel === 'dm') {
       const norm = item.text.replace(/\s+/g, ' ').trim()
       if (this.queue.some((q) => q.channel === 'dm' && q.text.replace(/\s+/g, ' ').trim() === norm)) return
-      if ([...this.repliedIds].some((id) => id.startsWith(norm.slice(0, 40)))) return
     }
 
     this.queue.push(item)
     const preview = item.text.slice(0, 50) + (item.text.length > 50 ? '…' : '')
-    this.pushActivity(
-      'info',
-      item.channel === 'dm' ? `پیام جدید: ${preview}` : `کامنت جدید: ${preview}`
-    )
+    this.pushActivity('info', item.channel === 'dm' ? `پیام جدید: ${preview}` : `کامنت جدید: ${preview}`)
   }
 
   private matchKeywordRule(text: string): KeywordRule | null {
@@ -336,12 +342,9 @@ export class AutoReplyController {
       while (this.queue.length > 0 && this.enabled) {
         const msg = this.queue.shift()!
         if (this.repliedIds.has(msg.id) || this.inFlightIds.has(msg.id)) continue
-
         this.inFlightIds.add(msg.id)
-
         if (msg.channel === 'dm') await this.handleDm(msg)
         else await this.handleComment(msg)
-
         this.inFlightIds.delete(msg.id)
         await sleep(1200)
       }
@@ -351,26 +354,24 @@ export class AutoReplyController {
   }
 
   private async handleDm(msg: PendingItem): Promise<void> {
-    // Mark early to prevent parallel double-send
     this.repliedIds.add(msg.id)
-
     const reply = generateReply(msg.text, this.memory)
     this.pushActivity('info', `پاسخ: ${reply.slice(0, 48)}${reply.length > 48 ? '…' : ''}`)
-
     await sleep(this.replyDelayMs)
     if (!this.enabled) return
-
     const result = await this.sendDm(reply)
     if (result.ok) {
-      this.pushActivity('success', result.reason === 'cooldown_ok' || result.reason === 'already_sent' ? 'پاسخ ارسال شد (تکراری جلوگیری شد)' : 'پاسخ ارسال شد')
+      this.pushActivity(
+        'success',
+        result.reason === 'cooldown_ok' || result.reason === 'already_sent'
+          ? 'پاسخ ارسال شد (بدون تکرار)'
+          : 'پاسخ ارسال شد'
+      )
+    } else if (result.reason === 'no_compose') {
+      this.repliedIds.delete(msg.id)
+      this.pushActivity('warn', 'باکس پیام پیدا نشد')
     } else {
-      // allow one retry later only for no_compose
-      if (result.reason === 'no_compose') {
-        this.repliedIds.delete(msg.id)
-        this.pushActivity('warn', 'باکس پیام پیدا نشد — گفتگو را باز کنید')
-      } else {
-        this.pushActivity('error', `ارسال ناموفق: ${result.reason}`)
-      }
+      this.pushActivity('error', `ارسال ناموفق: ${result.reason}`)
     }
   }
 
@@ -386,17 +387,14 @@ export class AutoReplyController {
         return
       }
     }
-
     this.repliedIds.add(msg.id)
     const commentText = rule?.commentReply?.trim() || generateCommentReply(msg.text, this.memory)
     this.pushActivity('info', `پاسخ کامنت: ${commentText.slice(0, 40)}…`)
     await sleep(this.replyDelayMs)
     if (!this.enabled) return
-
     const result = await this.sendComment(commentText, msg.text)
     if (result.ok) this.pushActivity('success', 'پاسخ کامنت ارسال شد')
     else this.pushActivity('error', `کامنت ناموفق: ${result.reason}`)
-
     if (rule?.dmMessage?.trim() && msg.username) {
       this.pendingDmAfterNav = { username: msg.username, text: rule.dmMessage.trim() }
       await this.exec(`window.__TE_IG_OPEN_DM__ && window.__TE_IG_OPEN_DM__(${JSON.stringify(msg.username)})`)
