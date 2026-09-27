@@ -48,6 +48,14 @@ function createWindow(): void {
     }
   })
 
+  // When user closes the window, hide instead of quit (stay in tray)
+  mainWindow.on('close', (event) => {
+    if (!(app as any).isQuitting) {
+      event.preventDefault()
+      mainWindow?.hide()
+    }
+  })
+
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
     return { action: 'deny' }
@@ -62,8 +70,20 @@ function createWindow(): void {
 }
 
 function createTray(): void {
-  // Simple tray icon (you can replace with real icon later)
-  const icon = nativeImage.createEmpty()
+  // Create a simple colored icon for tray (16x16)
+  const size = 16
+  const canvas = Buffer.alloc(size * size * 4)
+
+  // Fill with purple-ish color (simple solid icon)
+  for (let i = 0; i < size * size; i++) {
+    const idx = i * 4
+    canvas[idx] = 168     // R
+    canvas[idx + 1] = 85  // G
+    canvas[idx + 2] = 247 // B
+    canvas[idx + 3] = 255 // A
+  }
+
+  const icon = nativeImage.createFromBuffer(canvas, { width: size, height: size })
   tray = new Tray(icon)
 
   const contextMenu = Menu.buildFromTemplate([
@@ -86,6 +106,7 @@ function createTray(): void {
     {
       label: 'خروج',
       click: () => {
+        ;(app as any).isQuitting = true
         app.quit()
       }
     }
@@ -128,17 +149,15 @@ app.whenReady().then(() => {
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    else mainWindow?.show()
   })
 })
 
 app.on('window-all-closed', () => {
-  // Keep running in tray on Windows/Linux
-  if (process.platform !== 'darwin') {
-    // Don't quit - stay in tray
-  }
+  // Keep running in tray on all platforms
+  // User must explicitly quit from tray menu
 })
 
-// Prevent quitting when closing window (go to tray instead)
 app.on('before-quit', () => {
-  // Allow quit
+  ;(app as any).isQuitting = true
 })

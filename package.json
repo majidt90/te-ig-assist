@@ -18,8 +18,9 @@
     "lint": "eslint . --ext .ts,.tsx --fix"
   },
   "dependencies": {
+    "@electron-toolkit/utils": "^3.0.0",
     "@fontsource/vazirmatn": "^5.2.5",
-    "electron-store": "^10.0.0",
+    "electron-store": "^8.2.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-resizable-panels": "^2.1.7",
