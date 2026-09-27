@@ -40,6 +40,13 @@ interface Task {
   payload: Record<string, unknown>
 }
 
+/** key -> last preview fingerprint we already processed */
+interface HandledMeta {
+  previewFp: string
+  at: number
+  replied: boolean
+}
+
 const MAX_LOG = 200
 
 export class AutoReplyController {
@@ -52,8 +59,7 @@ export class AutoReplyController {
   private cycleBusy = false
   private repliedIds = new Set<string>()
   private inFlightIds = new Set<string>()
-  /** Thread keys already processed this session (stops reaction-unread loops) */
-  private handledThreadKeys = new Set<string>()
+  private handledThreads = new Map<string, HandledMeta>()
   private activities: ActivityItem[] = []
   private listeners = new Set<(items: ActivityItem[]) => void>()
   private pollTimer: ReturnType<typeof setInterval> | null = null
@@ -61,6 +67,7 @@ export class AutoReplyController {
   private injectorSource = ''
   private lastReadyPath = ''
   private currentThreadKey = ''
+  private currentPreview = ''
   private flags: FeatureFlags = { ...DEFAULT_FLAGS }
   private delays: FeatureDelays = { ...DEFAULT_DELAYS }
   private dmFilter: DmFilter = { ...DEFAULT_DM_FILTER, users: [] }
@@ -135,7 +142,8 @@ export class AutoReplyController {
     this.phase = 'idle'
     this.tasks = []
     this.unreadPass = 0
-    // keep handledThreadKeys so we don't re-loop same reaction threads in force
+    // Allow re-checking all unreads (new messages)
+    this.handledThreads.clear()
     void this.maybeScheduleCycle(true)
   }
 
@@ -170,18 +178,36 @@ export class AutoReplyController {
     this.tasks.sort((a, b) => a.executeAt - b.executeAt)
   }
 
-  private threadKeyFromPreview(preview: string, username?: string): string {
-    const u = (username || extractUsernameFromPreview(preview) || '').toLowerCase()
-    const base = (preview || '').slice(0, 80).toLowerCase()
-    return u ? `u:${u}` : `p:${base}`
+  private previewFp(preview: string): string {
+    return (preview || '').replace(/\s+/g, ' ').trim().slice(0, 120).toLowerCase()
   }
 
-  private markThreadHandled(key: string): void {
+  private threadKeyFromPreview(preview: string, username?: string): string {
+    const u = (username || extractUsernameFromPreview(preview) || '').toLowerCase()
+    return u ? `u:${u}` : `p:${this.previewFp(preview).slice(0, 40)}`
+  }
+
+  /** Skip only if same preview was already handled (new message = new preview → reopen) */
+  private isStillHandled(key: string, preview: string): boolean {
+    const meta = this.handledThreads.get(key)
+    if (!meta) return false
+    const fp = this.previewFp(preview)
+    if (fp && fp !== meta.previewFp) return false
+    // expire soft handles after 8 minutes without successful reply
+    if (!meta.replied && Date.now() - meta.at > 8 * 60_000) return false
+    return true
+  }
+
+  private markThreadHandled(key: string, preview: string, replied: boolean): void {
     if (!key) return
-    this.handledThreadKeys.add(key)
-    if (this.handledThreadKeys.size > 300) {
-      const first = this.handledThreadKeys.values().next().value
-      if (first) this.handledThreadKeys.delete(first)
+    this.handledThreads.set(key, {
+      previewFp: this.previewFp(preview),
+      at: Date.now(),
+      replied
+    })
+    if (this.handledThreads.size > 400) {
+      const first = this.handledThreads.keys().next().value
+      if (first) this.handledThreads.delete(first)
     }
   }
 
@@ -286,7 +312,6 @@ export class AutoReplyController {
     if (this.repliedIds.has(item.id) || this.inFlightIds.has(item.id)) return
     if (this.tasks.some((t) => t.payload['msgId'] === item.id)) return
 
-    // Skip pure reaction system lines
     if (/^reacted\s+/i.test(item.text.trim()) || /reacted .* to your message/i.test(item.text)) {
       this.repliedIds.add(item.id)
       return
@@ -295,8 +320,7 @@ export class AutoReplyController {
     if (item.channel === 'dm') {
       const u = item.username || ''
       if (!u && this.dmFilter.mode === 'whitelist') {
-        // soft skip — do NOT permanent-mark; peer may arrive on next scan
-        this.pushActivity('warn', 'یوزرنیم طرف مقابل مشخص نیست — فعلاً رد موقت (وایت‌لیست)')
+        this.pushActivity('warn', 'یوزرنیم طرف مقابل مشخص نیست — رد موقت (وایت‌لیست)')
         return
       }
       if (!isDmUserAllowed(u || undefined, this.dmFilter)) {
@@ -315,7 +339,7 @@ export class AutoReplyController {
     this.pushActivity(
       'info',
       item.channel === 'dm'
-        ? `پیام در صف${item.username ? ' @' + item.username : ''}: ${item.text.slice(0, 36)}…`
+        ? `پیام در صف${item.username ? ' @' + item.username : ''}: ${item.text.slice(0, 40)}…`
         : `کامنت در صف: ${item.text.slice(0, 42)}…`
     )
     this.enqueueTask(
@@ -347,7 +371,6 @@ export class AutoReplyController {
   private async executeTask(task: Task): Promise<void> {
     switch (task.kind) {
       case 'open_first_unread': {
-        // Prefer first unread that is NOT already handled
         const list =
           (await this.exec<
             Array<{ index: number; preview: string; href?: string; username?: string }>
@@ -358,14 +381,9 @@ export class AutoReplyController {
         for (const row of list) {
           const uname = row.username || extractUsernameFromPreview(row.preview)
           const key = this.threadKeyFromPreview(row.preview, uname)
-          if (this.handledThreadKeys.has(key)) continue
-          // Skip reaction-only previews after we've seen them once — mark handled
-          if (/reacted\s+/i.test(row.preview) && /to your message/i.test(row.preview)) {
-            // open once max — if already attempted via key, skip
-            // first time we still open to clear / inspect
-          }
+          if (this.isStillHandled(key, row.preview)) continue
           if (uname && !isDmUserAllowed(uname, this.dmFilter)) {
-            this.markThreadHandled(key)
+            this.markThreadHandled(key, row.preview, true)
             this.pushActivity('info', `رد گفتگو (فیلتر لیست): @${uname}`)
             continue
           }
@@ -374,11 +392,10 @@ export class AutoReplyController {
         }
 
         if (!chosen) {
-          // fallback open first if list empty of candidates
+          // try native first unread once
           const res = await this.exec<{
             ok?: boolean
             reason?: string
-            total?: number
             preview?: string
             username?: string
           }>('window.__TE_IG_OPEN_FIRST_UNREAD__ ? window.__TE_IG_OPEN_FIRST_UNREAD__() : ({ok:false})')
@@ -389,58 +406,71 @@ export class AutoReplyController {
           }
           const uname = res.username || extractUsernameFromPreview(res.preview || '')
           const key = this.threadKeyFromPreview(res.preview || '', uname)
-          if (this.handledThreadKeys.has(key)) {
-            this.pushActivity('info', 'این گفتگو قبلاً بررسی شده — رد')
-            this.enqueueTask('back_inbox', {}, 800)
+          if (this.isStillHandled(key, res.preview || '')) {
+            this.pushActivity('info', 'همان پیش‌نمایش قبلاً بررسی شده — رد')
+            this.enqueueTask('back_inbox', {}, 600)
             break
           }
           if (uname && !isDmUserAllowed(uname, this.dmFilter)) {
-            this.markThreadHandled(key)
+            this.markThreadHandled(key, res.preview || '', true)
             this.pushActivity('info', `رد گفتگو (فیلتر لیست): @${uname}`)
-            this.enqueueTask('back_inbox', {}, 800)
+            this.enqueueTask('back_inbox', {}, 600)
             break
           }
           this.currentThreadKey = key
-          this.pushActivity('info', `باز شد: ${(res.preview || '').slice(0, 48)}`)
-          this.enqueueTask('force_scan', { threadKey: key }, 2800)
-          this.enqueueTask('force_scan', { threadKey: key }, 5000)
-          this.enqueueTask('back_inbox', { threadKey: key, finalize: true }, 10000)
+          this.currentPreview = res.preview || ''
+          this.pushActivity('info', `باز شد: ${(res.preview || '').slice(0, 52)}`)
+          this.enqueueTask('force_scan', { threadKey: key, preview: res.preview || '' }, 2200)
+          this.enqueueTask('force_scan', { threadKey: key, preview: res.preview || '' }, 4500)
+          this.enqueueTask(
+            'back_inbox',
+            { threadKey: key, preview: res.preview || '', finalize: true },
+            9000
+          )
           break
         }
 
-        // open by index
         const openRes = await this.exec<{ ok?: boolean }>(
           `window.__TE_IG_OPEN_CONV_INDEX__ ? window.__TE_IG_OPEN_CONV_INDEX__(${chosen.index}) : ({ok:false})`
         )
         const key = this.threadKeyFromPreview(chosen.preview, chosen.username)
         this.currentThreadKey = key
+        this.currentPreview = chosen.preview
         if (!openRes?.ok) {
           this.pushActivity('warn', 'باز کردن گفتگو ناموفق')
-          this.markThreadHandled(key)
-          this.enqueueTask('back_inbox', {}, 800)
+          this.markThreadHandled(key, chosen.preview, false)
+          this.enqueueTask('back_inbox', {}, 600)
           break
         }
-        this.pushActivity('info', `باز شد: ${chosen.preview.slice(0, 48)}`)
-        this.enqueueTask('force_scan', { threadKey: key }, 2800)
-        this.enqueueTask('force_scan', { threadKey: key }, 5000)
-        this.enqueueTask('back_inbox', { threadKey: key, finalize: true }, 10000)
+        this.pushActivity('info', `باز شد: ${chosen.preview.slice(0, 52)}`)
+        this.enqueueTask('force_scan', { threadKey: key, preview: chosen.preview }, 2200)
+        this.enqueueTask('force_scan', { threadKey: key, preview: chosen.preview }, 4500)
+        this.enqueueTask(
+          'back_inbox',
+          { threadKey: key, preview: chosen.preview, finalize: true },
+          9000
+        )
         break
       }
       case 'force_scan': {
         const threadKey = String(task.payload['threadKey'] || this.currentThreadKey || '')
+        const preview = String(task.payload['preview'] || this.currentPreview || '')
         const info = await this.exec<{
           dmNodes?: number
           queued?: number
           method?: string
           peer?: string
+          hasAttachment?: boolean
         }>('window.__TE_IG_FORCE_SCAN_THREAD__ ? window.__TE_IG_FORCE_SCAN_THREAD__() : null')
+
         this.pushActivity(
           'info',
-          `اسکن اجباری: ${info?.dmNodes ?? 0} حباب / ${info?.queued ?? 0} صف${info?.peer ? ' @' + info.peer : ''}`
+          `اسکن: ${info?.dmNodes ?? 0} حباب / ${info?.queued ?? 0} صف${info?.peer ? ' @' + info.peer : ''}${info?.hasAttachment ? ' · رسانه' : ''}`
         )
+
         const batch =
           (await this.exec<
-            Array<{ id: string; text: string; kind: string; username?: string }>
+            Array<{ id: string; text: string; kind: string; username?: string; isAttachment?: boolean }>
           >('window.__TE_IG_POLL__ ? window.__TE_IG_POLL__() : []')) || []
 
         let queuedReplies = 0
@@ -458,21 +488,41 @@ export class AutoReplyController {
           }
         }
 
-        // No actionable text (e.g. only reaction) → mark handled so we don't loop
-        if ((info?.queued ?? 0) === 0 || queuedReplies === 0) {
-          if (threadKey) this.markThreadHandled(threadKey)
+        // Attachment / shared post with no text bubble: still react via logic
+        if ((info?.hasAttachment || /attachment|sent an attach/i.test(preview)) && queuedReplies === 0) {
+          const syntheticId = `attach|${threadKey}|${this.previewFp(preview)}`
+          if (!this.repliedIds.has(syntheticId)) {
+            this.scheduleReply({
+              id: syntheticId,
+              text: '[shared_post_or_attachment]',
+              timestamp: Date.now(),
+              channel: 'dm',
+              username: info?.peer
+            })
+            queuedReplies++
+          }
+        }
+
+        if (queuedReplies === 0 && (info?.queued ?? 0) === 0) {
+          // soft handle — same preview only
+          if (threadKey) this.markThreadHandled(threadKey, preview, false)
         }
         break
       }
       case 'back_inbox': {
         const threadKey = String(task.payload['threadKey'] || this.currentThreadKey || '')
+        const preview = String(task.payload['preview'] || this.currentPreview || '')
         const finalize = Boolean(task.payload['finalize'])
-        if (finalize && threadKey) this.markThreadHandled(threadKey)
+        if (finalize && threadKey) {
+          // only soft-mark if no pending reply tasks for this pass
+          const pendingDm = this.tasks.some((t) => t.kind === 'reply_dm')
+          if (!pendingDm) this.markThreadHandled(threadKey, preview, false)
+        }
 
         await this.exec('window.__TE_IG_GOTO__ && window.__TE_IG_GOTO__("/direct/inbox/")')
-        await sleep(2500)
+        await sleep(2200)
         this.unreadPass += 1
-        if (this.unreadPass < 10 && this.flags.autoReplyDms) {
+        if (this.unreadPass < 12 && this.flags.autoReplyDms) {
           const list =
             (await this.exec<Array<{ preview: string; username?: string }>>(
               'window.__TE_IG_LIST_CONVERSATIONS__ ? window.__TE_IG_LIST_CONVERSATIONS__() : []'
@@ -480,13 +530,13 @@ export class AutoReplyController {
           const remaining = list.filter((r) => {
             const uname = r.username || extractUsernameFromPreview(r.preview)
             const key = this.threadKeyFromPreview(r.preview, uname)
-            return !this.handledThreadKeys.has(key)
+            return !this.isStillHandled(key, r.preview)
           })
           if (remaining.length) {
             this.pushActivity('info', `ادامه unread: ${remaining.length} مورد`)
-            this.enqueueTask('open_first_unread', {}, 800)
+            this.enqueueTask('open_first_unread', {}, 700)
           } else {
-            this.pushActivity('info', 'همه unreadهای این پاس بررسی شد')
+            this.pushActivity('info', 'همه unreadهای قابل‌بررسی تمام شد')
           }
         }
         break
@@ -528,7 +578,18 @@ export class AutoReplyController {
         this.phase = 'dms'
         this.pushActivity('info', force ? 'فورس: بررسی unread…' : 'بررسی دایرکت‌های unread…')
         await this.exec('window.__TE_IG_GOTO__ && window.__TE_IG_GOTO__("/direct/inbox/")')
-        await sleep(3500)
+        await sleep(3200)
+
+        // scroll inbox a bit to load rows
+        await this.exec(`
+          (function(){
+            var sc = document.querySelector('div[role="main"]') || document.scrollingElement;
+            if (sc) { sc.scrollTop = 0; }
+            var box = document.querySelector('[role="listbox"], [aria-label*="Messages"], div[role="main"]');
+            if (box) { box.scrollTop = 0; }
+          })()
+        `)
+        await sleep(800)
 
         const list =
           (await this.exec<Array<{ preview: string; username?: string }>>(
@@ -538,7 +599,7 @@ export class AutoReplyController {
         const actionable = list.filter((r) => {
           const uname = r.username || extractUsernameFromPreview(r.preview)
           const key = this.threadKeyFromPreview(r.preview, uname)
-          return !this.handledThreadKeys.has(key)
+          return !this.isStillHandled(key, r.preview)
         })
 
         this.pushActivity(
@@ -549,7 +610,7 @@ export class AutoReplyController {
         )
 
         if (actionable.length) {
-          this.enqueueTask('open_first_unread', {}, 600)
+          this.enqueueTask('open_first_unread', {}, 500)
           this.phase = 'listening'
           return
         }
@@ -559,7 +620,7 @@ export class AutoReplyController {
         this.phase = 'notifs'
         this.pushActivity('info', 'بررسی نوتیفیکیشن…')
         await this.exec('window.__TE_IG_OPEN_ACTIVITY_UI__ && window.__TE_IG_OPEN_ACTIVITY_UI__()')
-        await sleep(3000)
+        await sleep(2800)
         const acts =
           (await this.exec<Array<{ href: string; text: string }>>(
             'window.__TE_IG_LIST_ACTIVITY__ ? window.__TE_IG_LIST_ACTIVITY__() : []'
@@ -597,23 +658,55 @@ export class AutoReplyController {
 
     const result = generateSmartReply(msg.text, this.memory, this.logic)
     if (result.matchedLogic) {
-      this.pushActivity('info', `منطق: ${result.matchedLogic.slice(0, 50)}`)
+      this.pushActivity('info', `منطق: ${result.matchedLogic.slice(0, 56)}`)
     }
-    this.pushActivity('info', `پاسخ: ${result.text.slice(0, 48)}`)
 
-    if (result.actions.includes('like_shared')) {
-      const liked = await this.exec<{ ok?: boolean }>(
-        'window.__TE_IG_LIKE_SHARED__ ? window.__TE_IG_LIKE_SHARED__() : ({ok:false})'
+    // React with heart on shared post / attachment
+    if (result.actions.includes('react_heart') || result.actions.includes('like_shared')) {
+      const reacted = await this.exec<{ ok?: boolean; via?: string }>(
+        'window.__TE_IG_REACT_HEART__ ? window.__TE_IG_REACT_HEART__() : ({ok:false})'
       )
-      if (liked?.ok) this.pushActivity('success', 'لایک شد')
+      if (reacted?.ok) {
+        this.pushActivity('success', `ری‌اکت قلب انجام شد${reacted.via ? ' (' + reacted.via + ')' : ''}`)
+      } else {
+        const liked = await this.exec<{ ok?: boolean }>(
+          'window.__TE_IG_LIKE_SHARED__ ? window.__TE_IG_LIKE_SHARED__() : ({ok:false})'
+        )
+        if (liked?.ok) this.pushActivity('success', 'لایک رسانه انجام شد')
+        else this.pushActivity('warn', 'ری‌اکت/لایک پیدا نشد')
+      }
     }
 
+    // For pure attachment synthetic messages, optional short reply if engine produced text
+    const isAttachOnly = msg.text === '[shared_post_or_attachment]'
+    if (isAttachOnly && (!result.text || result.text === 'پیامتون رو دیدم ✅')) {
+      // still send a warm short reply if memory/logic suggests friendliness
+      const warm = generateSmartReply('سلام', this.memory, this.logic)
+      if (warm.text && !warm.text.includes('پیامتون')) {
+        this.pushActivity('info', `پاسخ: ${warm.text.slice(0, 48)}`)
+        const sent = await this.sendDm(warm.text)
+        this.inFlightIds.delete(msg.id)
+        if (sent.ok) {
+          this.pushActivity('success', 'پاسخ دایرکت ارسال شد')
+          if (this.currentThreadKey)
+            this.markThreadHandled(this.currentThreadKey, this.currentPreview, true)
+        }
+        return
+      }
+      this.inFlightIds.delete(msg.id)
+      if (this.currentThreadKey)
+        this.markThreadHandled(this.currentThreadKey, this.currentPreview, true)
+      return
+    }
+
+    this.pushActivity('info', `پاسخ: ${result.text.slice(0, 48)}`)
     const sent = await this.sendDm(result.text)
     this.inFlightIds.delete(msg.id)
     if (sent.ok) {
       this.pushActivity('success', 'پاسخ دایرکت ارسال شد')
-      if (this.currentThreadKey) this.markThreadHandled(this.currentThreadKey)
-      if (msg.username) this.markThreadHandled(`u:${msg.username.toLowerCase()}`)
+      if (this.currentThreadKey)
+        this.markThreadHandled(this.currentThreadKey, this.currentPreview, true)
+      if (msg.username) this.markThreadHandled(`u:${msg.username.toLowerCase()}`, this.currentPreview, true)
     } else if (sent.reason === 'no_compose') {
       this.repliedIds.delete(msg.id)
       this.pushActivity('warn', 'باکس پیام نیست')
