@@ -256,7 +256,13 @@ export class AutoReplyController {
   }
 
   private previewFp(preview: string): string {
-    return (preview || '').replace(/\s+/g, ' ').trim().slice(0, 120).toLowerCase()
+    return (preview || '')
+      .replace(/\b\d+\s*[mhd]\b/gi, '')
+      .replace(/\bUnread\b/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 80)
+      .toLowerCase()
   }
 
   private threadKeyFromPreview(preview: string, username?: string): string {
@@ -699,7 +705,22 @@ export class AutoReplyController {
             this.markThreadHandled(threadKey, preview, true)
             this.pushActivity('info', `رد شد (فیلتر لیست): @${info.peer}`)
             this.enqueueTask('back_inbox', { threadKey, preview, finalize: true }, 400)
+            break
           }
+        }
+        const q = info?.queued ?? 0
+        if (q === 0) {
+          const looksAtt = /sent an attachment|shared a post|shared a reel|پیوست|attachment/i.test(preview)
+          const synthetic = looksAtt ? 'shared_post attachment' : (preview || 'unread message').slice(0, 120)
+          const id = `syn-${threadKey}-${Date.now()}`
+          this.pushActivity('info', `صف مصنوعی: ${synthetic.slice(0, 40)}`)
+          this.scheduleReply({
+            id,
+            text: synthetic,
+            timestamp: Date.now(),
+            channel: 'dm',
+            username: info?.peer || extractUsernameFromPreview(preview)
+          })
         }
         break
       }
