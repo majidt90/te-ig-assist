@@ -1,125 +1,387 @@
-import { useRef, useEffect, useState } from 'react'
+import { useRef, useEffect, useState, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Instagram, RefreshCw, ArrowLeft, ArrowRight } from 'lucide-react'
+import {
+  Instagram,
+  RefreshCw,
+  ArrowLeft,
+  ArrowRight,
+  Activity,
+  ChevronDown,
+  ChevronUp,
+  Copy,
+  Check,
+  Send,
+  X,
+  Pencil
+} from 'lucide-react'
 import { cn } from '../lib/utils'
+import { INJECTOR_SOURCE } from '../lib/instagramInjector'
+import {
+  autoReplyController,
+  type ActivityItem,
+  type ApprovalItem
+} from '../lib/autoReplyController'
+import type { DmListMode, KeywordRule } from '../lib/types'
 
 export default function InstagramPanel(): JSX.Element {
   const webviewRef = useRef<Electron.WebviewTag | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [canGoBack, setCanGoBack] = useState(false)
   const [canGoForward, setCanGoForward] = useState(false)
+  const [activities, setActivities] = useState<ActivityItem[]>([])
+  const [approvals, setApprovals] = useState<ApprovalItem[]>([])
+  const [logOpen, setLogOpen] = useState(true)
+  const [copiedId, setCopiedId] = useState<string | null>(null)
+  const [copiedAll, setCopiedAll] = useState(false)
+  const [editMap, setEditMap] = useState<Record<string, string>>({})
+
+  const injectMonitor = useCallback(async () => {
+    const wv = webviewRef.current
+    if (!wv) return
+    await autoReplyController.ensureInjected(wv, INJECTOR_SOURCE)
+    autoReplyController.bindWebview(wv, INJECTOR_SOURCE)
+  }, [])
+
+  const syncStore = useCallback(async () => {
+    const keys = [
+      'autoReplyEnabled',
+      'memory',
+      'logic',
+      'autoReplyDms',
+      'autoReplyComments',
+      'autoReplyNotifications',
+      'delayDmsMs',
+      'delayCommentsMs',
+      'delayNotificationsMs',
+      'replyOwnPostComments',
+      'replyMentions',
+      'keywordRulesEnabled',
+      'keywordRules',
+      'walkUnreadDms',
+      'acceptFollowRequests',
+      'followBack',
+      'autoCycle',
+      'cycleIntervalMs',
+      'dmListMode',
+      'dmUserList',
+      'replyAllInThread',
+      'previewBeforeSend',
+      'workingHoursEnabled',
+      'workStartHour',
+      'workEndHour',
+      'dailyLimitEnabled',
+      'dailyLimitDm',
+      'dailyLimitComment',
+      'dailyStats'
+    ] as const
+    const vals = await Promise.all(keys.map((k) => window.api.getStore(k)))
+    const g = Object.fromEntries(keys.map((k, i) => [k, vals[i]])) as Record<string, unknown>
+
+    autoReplyController.setEnabled(Boolean(g.autoReplyEnabled))
+    autoReplyController.setMemory(typeof g.memory === 'string' ? g.memory : '')
+    autoReplyController.setLogic(typeof g.logic === 'string' ? g.logic : '')
+    autoReplyController.setAutoCycle(g.autoCycle !== false)
+    if (typeof g.cycleIntervalMs === 'number') autoReplyController.setCycleIntervalMs(g.cycleIntervalMs)
+    autoReplyController.setFlags({
+      autoReplyDms: g.autoReplyDms !== false,
+      autoReplyComments: g.autoReplyComments !== false,
+      autoReplyNotifications: g.autoReplyNotifications !== false,
+      replyOwnPostComments: g.replyOwnPostComments !== false,
+      replyMentions: g.replyMentions !== false,
+      keywordRulesEnabled: g.keywordRulesEnabled !== false,
+      walkUnreadDms: g.walkUnreadDms !== false,
+      acceptFollowRequests: Boolean(g.acceptFollowRequests),
+      followBack: Boolean(g.followBack),
+      replyAllInThread: g.replyAllInThread !== false,
+      previewBeforeSend: Boolean(g.previewBeforeSend)
+    })
+    autoReplyController.setDelays({
+      delayDmsMs: typeof g.delayDmsMs === 'number' ? g.delayDmsMs : 2500,
+      delayCommentsMs: typeof g.delayCommentsMs === 'number' ? g.delayCommentsMs : 3000,
+      delayNotificationsMs: typeof g.delayNotificationsMs === 'number' ? g.delayNotificationsMs : 3000
+    })
+    const mode: DmListMode =
+      g.dmListMode === 'whitelist' || g.dmListMode === 'blacklist' || g.dmListMode === 'off'
+        ? g.dmListMode
+        : 'off'
+    autoReplyController.setDmFilter({
+      mode,
+      users: Array.isArray(g.dmUserList) ? (g.dmUserList as string[]) : []
+    })
+    autoReplyController.setSafety({
+      workingHoursEnabled: Boolean(g.workingHoursEnabled),
+      workStartHour: typeof g.workStartHour === 'number' ? g.workStartHour : 9,
+      workEndHour: typeof g.workEndHour === 'number' ? g.workEndHour : 22,
+      dailyLimitEnabled: Boolean(g.dailyLimitEnabled),
+      dailyLimitDm: typeof g.dailyLimitDm === 'number' ? g.dailyLimitDm : 50,
+      dailyLimitComment: typeof g.dailyLimitComment === 'number' ? g.dailyLimitComment : 30
+    })
+    if (g.dailyStats && typeof g.dailyStats === 'object') {
+      const s = g.dailyStats as { day?: string; dm?: number; comment?: number }
+      autoReplyController.setDailyStats({
+        day: s.day || '',
+        dm: s.dm || 0,
+        comment: s.comment || 0
+      })
+    }
+    if (Array.isArray(g.keywordRules)) autoReplyController.setKeywordRules(g.keywordRules as KeywordRule[])
+  }, [])
+
+  useEffect(() => {
+    void syncStore()
+    const unsub = autoReplyController.subscribe(setActivities)
+    const unsubA = autoReplyController.subscribeApprovals(setApprovals)
+    return () => {
+      unsub()
+      unsubA()
+      autoReplyController.unbindWebview()
+    }
+  }, [syncStore])
+
+  useEffect(() => {
+    const id = setInterval(() => void syncStore(), 2000)
+    return () => clearInterval(id)
+  }, [syncStore])
 
   useEffect(() => {
     const webview = webviewRef.current
     if (!webview) return
-
     const updateNav = () => {
       setCanGoBack(webview.canGoBack())
       setCanGoForward(webview.canGoForward())
     }
-
     const handleStart = () => setIsLoading(true)
     const handleStop = () => {
       setIsLoading(false)
       updateNav()
+      setTimeout(() => void injectMonitor(), 800)
     }
-
+    const handleNav = () => {
+      updateNav()
+      setTimeout(() => void injectMonitor(), 1000)
+    }
     webview.addEventListener('did-start-loading', handleStart)
     webview.addEventListener('did-stop-loading', handleStop)
-    webview.addEventListener('did-navigate', updateNav)
-    webview.addEventListener('did-navigate-in-page', updateNav)
-
+    webview.addEventListener('did-navigate', handleNav)
+    webview.addEventListener('did-navigate-in-page', handleNav)
+    setTimeout(() => void injectMonitor(), 1200)
     return () => {
       webview.removeEventListener('did-start-loading', handleStart)
       webview.removeEventListener('did-stop-loading', handleStop)
-      webview.removeEventListener('did-navigate', updateNav)
-      webview.removeEventListener('did-navigate-in-page', updateNav)
+      webview.removeEventListener('did-navigate', handleNav)
+      webview.removeEventListener('did-navigate-in-page', handleNav)
     }
-  }, [])
+  }, [injectMonitor])
 
-  const handleRefresh = () => webviewRef.current?.reload()
-  const handleBack = () => webviewRef.current?.goBack()
-  const handleForward = () => webviewRef.current?.goForward()
+  const formatLine = (a: ActivityItem): string => {
+    const t = new Date(a.at).toLocaleTimeString('fa-IR', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    })
+    return `${t}\t[${a.level}]\t${a.message}`
+  }
+
+  const copyOne = async (a: ActivityItem) => {
+    try {
+      await navigator.clipboard.writeText(formatLine(a))
+      setCopiedId(a.id)
+      setTimeout(() => setCopiedId(null), 1200)
+    } catch {
+      /* */
+    }
+  }
+
+  const copyAll = async () => {
+    try {
+      await navigator.clipboard.writeText(activities.map(formatLine).join('\n'))
+      setCopiedAll(true)
+      setTimeout(() => setCopiedAll(false), 1500)
+    } catch {
+      /* */
+    }
+  }
+
+  const levelColor = (level: ActivityItem['level']): string => {
+    if (level === 'success') return 'text-emerald-400'
+    if (level === 'warn') return 'text-amber-400'
+    if (level === 'error') return 'text-red-400'
+    return 'text-white/55'
+  }
 
   return (
     <div className="relative flex h-full w-full flex-col bg-[#0a0a0a]">
-      {/* Toolbar */}
-      <div className="flex h-9 shrink-0 items-center justify-between border-b border-white/[0.06] bg-black/70 px-2.5 backdrop-blur-sm">
+      <div className="flex h-9 shrink-0 items-center justify-between border-b border-white/[0.06] bg-black/70 px-2.5">
         <div className="flex items-center gap-1">
           <button
-            onClick={handleBack}
+            onClick={() => webviewRef.current?.goBack()}
             disabled={!canGoBack}
-            className={cn(
-              'rounded-md p-1.5 transition-colors',
-              canGoBack
-                ? 'text-white/60 hover:bg-white/10 hover:text-white'
-                : 'text-white/20 cursor-not-allowed'
-            )}
-            title="برگشت"
+            className={cn('rounded-md p-1.5', canGoBack ? 'text-white/60 hover:bg-white/10' : 'text-white/20')}
           >
-            <ArrowRight className="h-3.5 w-3.5" /> {/* RTL: right = back */}
+            <ArrowRight className="h-3.5 w-3.5" />
           </button>
           <button
-            onClick={handleForward}
+            onClick={() => webviewRef.current?.goForward()}
             disabled={!canGoForward}
-            className={cn(
-              'rounded-md p-1.5 transition-colors',
-              canGoForward
-                ? 'text-white/60 hover:bg-white/10 hover:text-white'
-                : 'text-white/20 cursor-not-allowed'
-            )}
-            title="جلو"
+            className={cn('rounded-md p-1.5', canGoForward ? 'text-white/60 hover:bg-white/10' : 'text-white/20')}
           >
             <ArrowLeft className="h-3.5 w-3.5" />
           </button>
-
           <div className="mx-1.5 h-3.5 w-px bg-white/10" />
-
           <div className="flex items-center gap-1.5 px-1">
             <Instagram className="h-3.5 w-3.5 text-pink-400" />
-            <span className="text-[11px] font-medium tracking-wide text-white/50">
-              instagram.com
-            </span>
+            <span className="text-[11px] text-white/50">instagram.com</span>
           </div>
         </div>
-
-        <button
-          onClick={handleRefresh}
-          className="rounded-md p-1.5 text-white/50 transition-colors hover:bg-white/10 hover:text-white"
-          title="بارگذاری مجدد"
-        >
-          <RefreshCw className={cn('h-3.5 w-3.5', isLoading && 'animate-spin')} />
-        </button>
+        <div className="flex items-center gap-1">
+          {approvals.length > 0 && (
+            <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] text-amber-300">
+              {approvals.length} تأیید
+            </span>
+          )}
+          <button
+            onClick={() => setLogOpen((v) => !v)}
+            className={cn(
+              'flex items-center gap-1 rounded-md px-2 py-1 text-[10px]',
+              logOpen ? 'bg-white/10 text-white' : 'text-white/50'
+            )}
+          >
+            <Activity className="h-3.5 w-3.5" />
+            لاگ
+            {logOpen ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+          </button>
+          <button onClick={() => webviewRef.current?.reload()} className="rounded-md p-1.5 text-white/50">
+            <RefreshCw className={cn('h-3.5 w-3.5', isLoading && 'animate-spin')} />
+          </button>
+        </div>
       </div>
 
-      {/* WebView area */}
-      <div className="relative flex-1">
-        <AnimatePresence>
-          {isLoading && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.2 }}
-              className="absolute inset-0 z-10 flex items-center justify-center bg-black/50 backdrop-blur-[2px]"
-            >
-              <div className="flex flex-col items-center gap-3">
-                <div className="relative h-9 w-9">
-                  <div className="absolute inset-0 animate-spin rounded-full border-2 border-pink-500/30 border-t-pink-500" />
+      <AnimatePresence>
+        {approvals.length > 0 && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            className="border-b border-amber-500/20 bg-amber-500/10"
+          >
+            <div className="max-h-40 space-y-2 overflow-y-auto px-3 py-2">
+              {approvals.map((a) => (
+                <div key={a.id} className="rounded-lg border border-white/10 bg-black/40 p-2">
+                  <p className="text-[10px] text-white/40">
+                    {a.channel === 'dm' ? 'دایرکت' : 'کامنت'}
+                    {a.username ? ` · @${a.username}` : ''}
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-white/55">«{a.incoming.slice(0, 80)}»</p>
+                  <textarea
+                    className="mt-1 w-full resize-none rounded-md border border-white/10 bg-black/50 px-2 py-1 text-[11px] text-white"
+                    rows={2}
+                    value={editMap[a.id] ?? a.draft}
+                    onChange={(e) => setEditMap((m) => ({ ...m, [a.id]: e.target.value }))}
+                  />
+                  <div className="mt-1 flex gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        autoReplyController.approveReply(a.id, editMap[a.id] ?? a.draft)
+                        setEditMap((m) => {
+                          const n = { ...m }
+                          delete n[a.id]
+                          return n
+                        })
+                      }}
+                      className="flex items-center gap-1 rounded-md bg-emerald-500/20 px-2 py-1 text-[10px] text-emerald-300"
+                    >
+                      <Send className="h-3 w-3" />
+                      ارسال
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => autoReplyController.rejectReply(a.id)}
+                      className="flex items-center gap-1 rounded-md bg-red-500/15 px-2 py-1 text-[10px] text-red-300"
+                    >
+                      <X className="h-3 w-3" />
+                      رد
+                    </button>
+                    <span className="flex items-center gap-1 text-[10px] text-white/30">
+                      <Pencil className="h-3 w-3" />
+                      قابل ویرایش
+                    </span>
+                  </div>
                 </div>
-                <p className="text-[11px] text-white/50">در حال اتصال به اینستاگرام...</p>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
+      <AnimatePresence>
+        {logOpen && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            className="overflow-hidden border-b border-white/[0.06] bg-black/90"
+          >
+            <div className="flex items-center justify-between border-b border-white/[0.04] px-3 py-1">
+              <span className="text-[10px] text-white/35">{activities.length} ردیف (حداکثر ۲۰۰)</span>
+              <button
+                onClick={() => void copyAll()}
+                className="flex items-center gap-1 rounded px-2 py-0.5 text-[10px] text-white/60 hover:bg-white/10"
+              >
+                {copiedAll ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+                {copiedAll ? 'کپی شد' : 'کپی همه'}
+              </button>
+            </div>
+            <div className="max-h-52 space-y-0.5 overflow-y-auto px-2 py-1.5">
+              {activities.length === 0 ? (
+                <p className="px-1 text-[11px] text-white/35">منتظر رویداد…</p>
+              ) : (
+                activities.map((a) => (
+                  <div
+                    key={a.id}
+                    className="group flex items-start gap-1.5 rounded px-1 py-0.5 hover:bg-white/[0.04]"
+                  >
+                    <span className="shrink-0 tabular-nums text-[10px] text-white/30">
+                      {new Date(a.at).toLocaleTimeString('fa-IR', {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        second: '2-digit'
+                      })}
+                    </span>
+                    <span className={cn('min-w-0 flex-1 text-[11px]', levelColor(a.level))}>{a.message}</span>
+                    <button
+                      onClick={() => void copyOne(a)}
+                      className="shrink-0 rounded p-0.5 text-white/20 opacity-0 group-hover:opacity-100"
+                    >
+                      {copiedId === a.id ? (
+                        <Check className="h-3 w-3 text-emerald-400" />
+                      ) : (
+                        <Copy className="h-3 w-3" />
+                      )}
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <div className="relative flex-1">
+        {isLoading && (
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/50">
+            <div className="h-8 w-8 animate-spin rounded-full border-2 border-pink-500/30 border-t-pink-500" />
+          </div>
+        )}
         <webview
           ref={webviewRef as any}
-          src="https://www.instagram.com"
+          src="https://www.instagram.com/direct/inbox/"
           className="h-full w-full"
-          // @ts-expect-error webview attributes
+          // @ts-expect-error webview attrs
           allowpopups="true"
           partition="persist:instagram"
+          webpreferences="contextIsolation=yes, javascript=yes, plugins=yes, nativeWindowOpen=yes"
+          useragent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         />
       </div>
     </div>
