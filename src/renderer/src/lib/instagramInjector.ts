@@ -1,5 +1,5 @@
 /**
- * Instagram injector — unread DM scan, attachment detect, heart react.
+ * Instagram injector — robust unread DM scan for current IG web DOM.
  */
 
 export const INJECTOR_SOURCE = `
@@ -11,14 +11,15 @@ export const INJECTOR_SOURCE = `
   var lastSendAt = 0;
   var MIN_SEND_GAP_MS = 3500;
   var lastSentText = '';
-  var lastScanInfo = { path: '', dmNodes: 0, queued: 0, thread: false, method: '', peer: '', hasAttachment: false };
+  var lastScanInfo = { path: '', dmNodes: 0, queued: 0, thread: false, method: '', peer: '', hasAttachment: false, listDebug: '' };
 
   function path() { return location.pathname || ''; }
   function isDirectPage() { return /\\/direct\\//i.test(path()); }
   function isPostPage() { return /\\/(p|reel)\\//i.test(path()); }
   function isInbox() {
     var p = path();
-    return p === '/direct/inbox/' || p === '/direct/inbox' || p === '/direct/' || p === '/direct';
+    return p === '/direct/inbox/' || p === '/direct/inbox' || p === '/direct/' || p === '/direct' ||
+      (p.indexOf('/direct/') === 0 && p.indexOf('/direct/t/') !== 0);
   }
   function hasCompose() { return !!findComposeBox(); }
   function isThread() {
@@ -60,7 +61,7 @@ export const INJECTOR_SOURCE = `
     var eng = t.match(/\\b([A-Za-z][A-Za-z0-9._]{1,28})\\b/g) || [];
     for (var i = 0; i < eng.length; i++) {
       var w = eng[i];
-      if (/^(Unread|Reacted|You|Sent|Messages?|Active|Online|Attachment|Liked|Message|New)$/i.test(w)) continue;
+      if (/^(Unread|Reacted|You|Sent|Messages?|Active|Online|Attachment|Liked|Message|New|Requests)$/i.test(w)) continue;
       return w;
     }
     var first = (t.split(/\\s+/)[0] || '').replace(/^@/, '');
@@ -95,36 +96,155 @@ export const INJECTOR_SOURCE = `
     return false;
   }
 
+  /** Broader blue-dot detector (IG uses several blue tones) */
   function hasBlueUnreadIndicator(root) {
-    var nodes = root.querySelectorAll('div, span');
-    for (var i = 0; i < Math.min(nodes.length, 50); i++) {
+    if (!root) return false;
+    var nodes = root.querySelectorAll('div, span, i, canvas');
+    for (var i = 0; i < Math.min(nodes.length, 80); i++) {
       var el = nodes[i];
       try {
         var st = window.getComputedStyle(el);
-        var bg = st.backgroundColor || '';
-        var w = parseFloat(st.width) || 0;
-        var h = parseFloat(st.height) || 0;
-        if (w >= 4 && w <= 16 && h >= 4 && h <= 16) {
-          if (/0,?\\s*149,?\\s*246|55,?\\s*151,?\\s*240/.test(bg)) return true;
-        }
+        var bg = (st.backgroundColor || '').replace(/\\s/g, '');
+        var w = parseFloat(st.width) || el.offsetWidth || 0;
+        var h = parseFloat(st.height) || el.offsetHeight || 0;
+        if (w < 3 || w > 22 || h < 3 || h > 22) continue;
+        // rgb(0,149,246) and close blues + rgba variants
+        var m = bg.match(/rgba?\\((\\d+),(\\d+),(\\d+)/);
+        if (!m) continue;
+        var r = +m[1], g = +m[2], b = +m[3];
+        // Instagram messenger blue family
+        if (b > 180 && g > 100 && g < 200 && r < 100) return true;
+        if (r < 80 && g > 120 && g < 190 && b > 220) return true;
       } catch (e) {}
     }
     return false;
   }
 
   function isYouSentPreview(text) {
-    return /you sent|شما ارسال|شما فرستاد/i.test(text || '');
+    return /^(You:|You sent|شما:|شما ارسال|شما فرستاد)/i.test((text || '').trim()) ||
+      /\\bYou sent\\b/i.test(text || '') ||
+      /شما ارسال کردید/i.test(text || '');
   }
 
-  function isUnreadRow(row) {
-    if (!row) return false;
-    var preview = (row.innerText || '').replace(/\\s+/g, ' ');
-    if (isYouSentPreview(preview) && !/\\d+\\s*new message/i.test(preview) && !/Unread/i.test(preview)) return false;
-    if (hasBlueUnreadIndicator(row)) return true;
-    if (/\\d+\\s*new message|Unread|خوانده\\s*نشده|نخوانده/i.test(preview)) return true;
+  function rowLooksLikeConversation(el) {
+    try {
+      var r = el.getBoundingClientRect();
+      if (r.height < 48 || r.height > 160) return false;
+      if (r.width < 120) return false;
+      // left half of screen = inbox list
+      if (r.left > (window.innerWidth || 900) * 0.55) return false;
+      if (r.top < 40) return false;
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /** Score 0–10; >=3 treated as actionable unread/needs-reply */
+  function scoreUnreadRow(row, preview) {
+    var score = 0;
+    var p = (preview || '').replace(/\\s+/g, ' ').trim();
+    if (!p || p.length < 2) return 0;
+    if (isYouSentPreview(p)) return 0;
+
+    if (hasBlueUnreadIndicator(row)) score += 6;
+    if (/\\d+\\s*new message/i.test(p)) score += 5;
+    if (/\\bUnread\\b|خوانده\\s*نشده|نخوانده/i.test(p)) score += 5;
     var aria = row.getAttribute('aria-label') || '';
-    if (/unread|خوانده|نخوانده|new message/i.test(aria)) return true;
-    return false;
+    if (/unread|خوانده|نخوانده|new message/i.test(aria)) score += 5;
+
+    // bold name/preview often = unread
+    try {
+      var spans = row.querySelectorAll('span');
+      var bold = 0;
+      for (var s = 0; s < Math.min(spans.length, 20); s++) {
+        var fw = window.getComputedStyle(spans[s]).fontWeight || '';
+        if (parseInt(fw, 10) >= 600 || fw === 'bold') bold++;
+      }
+      if (bold >= 1) score += 2;
+      if (bold >= 2) score += 1;
+    } catch (e) {}
+
+    // Incoming preview (not You) is a soft signal — answer if no stronger unread found
+    if (!isYouSentPreview(p) && p.length > 3) score += 2;
+
+    // Recent time markers
+    if (/\\b([1-5]?\\d)m\\b|\\b([1-9])h\\b|همین حالا|just now|1m|2m/i.test(p)) score += 1;
+
+    return score;
+  }
+
+  function collectUnreadRows() {
+    var rows = [];
+    var seenKey = {};
+    var debugCounts = { anchors: 0, buttons: 0, scored: 0 };
+
+    function pushRow(clickEl, href, preview, score) {
+      var key = (href || '') + '|' + (preview || '').slice(0, 40);
+      if (seenKey[key]) return;
+      seenKey[key] = true;
+      rows.push({
+        el: clickEl,
+        href: href || '',
+        preview: (preview || '').slice(0, 140),
+        username: usernameFromPreview(preview || ''),
+        score: score
+      });
+      debugCounts.scored++;
+    }
+
+    // Strategy A: anchors to /direct/t/
+    var anchors = document.querySelectorAll('a[href*="/direct/t/"]');
+    debugCounts.anchors = anchors.length;
+    for (var i = 0; i < anchors.length; i++) {
+      var a = anchors[i];
+      var href = a.getAttribute('href') || '';
+      if (!href) continue;
+      var row = a.closest('[role="button"]') || a.closest('[role="listitem"]') || a.closest('div[tabindex]') || a.parentElement || a;
+      if (!rowLooksLikeConversation(row) && !rowLooksLikeConversation(a)) continue;
+      var preview = (row.innerText || a.innerText || '').replace(/\\s+/g, ' ').trim();
+      var score = scoreUnreadRow(row, preview);
+      if (score >= 3) pushRow(a, href, preview, score);
+    }
+
+    // Strategy B: list buttons in left column (no href required)
+    if (rows.length === 0) {
+      var candidates = document.querySelectorAll(
+        '[role="listbox"] [role="button"], [role="list"] [role="button"], div[role="button"], div[role="listitem"]'
+      );
+      debugCounts.buttons = candidates.length;
+      for (var r = 0; r < candidates.length; r++) {
+        var el = candidates[r];
+        if (!rowLooksLikeConversation(el)) continue;
+        var prev = (el.innerText || '').replace(/\\s+/g, ' ').trim();
+        if (!prev || prev.length < 3) continue;
+        if (/^(Messages|Requests|Primary|General|پیام|درخواست)/i.test(prev) && prev.length < 24) continue;
+        var sc = scoreUnreadRow(el, prev);
+        if (sc >= 3) {
+          var link = el.querySelector('a[href*="/direct/t/"]');
+          pushRow(link || el, link ? (link.getAttribute('href') || '') : '', prev, sc);
+        }
+      }
+    }
+
+    // Strategy C: soft fallback — any non-You-sent conversation row (score >= 2)
+    if (rows.length === 0) {
+      var allA = document.querySelectorAll('a[href*="/direct/t/"]');
+      for (var j = 0; j < allA.length; j++) {
+        var a2 = allA[j];
+        var href2 = a2.getAttribute('href') || '';
+        var row2 = a2.closest('[role="button"]') || a2.parentElement || a2;
+        if (!rowLooksLikeConversation(row2) && !rowLooksLikeConversation(a2)) continue;
+        var p2 = (row2.innerText || '').replace(/\\s+/g, ' ').trim();
+        if (isYouSentPreview(p2)) continue;
+        if (!p2 || p2.length < 4) continue;
+        pushRow(a2, href2, p2, 2);
+      }
+    }
+
+    rows.sort(function (a, b) { return (b.score || 0) - (a.score || 0); });
+    lastScanInfo.listDebug = 'a=' + debugCounts.anchors + ' b=' + debugCounts.buttons + ' hit=' + rows.length;
+    return rows;
   }
 
   function collectDmCandidates() {
@@ -190,16 +310,16 @@ export const INJECTOR_SOURCE = `
 
   function scanDms(force) {
     if (!isDirectPage() && !hasCompose()) {
-      lastScanInfo = { path: path(), dmNodes: 0, queued: 0, thread: false, method: 'skip', peer: '', hasAttachment: false };
+      lastScanInfo = { path: path(), dmNodes: 0, queued: 0, thread: false, method: 'skip', peer: '', hasAttachment: false, listDebug: lastScanInfo.listDebug || '' };
       return;
     }
     if (isInbox() && !hasCompose()) {
-      lastScanInfo = { path: path(), dmNodes: 0, queued: 0, thread: false, method: 'inbox_only', peer: '', hasAttachment: false };
+      lastScanInfo = { path: path(), dmNodes: 0, queued: 0, thread: false, method: 'inbox_only', peer: '', hasAttachment: false, listDebug: lastScanInfo.listDebug || '' };
       return;
     }
     var nodes = collectDmCandidates();
     var hasAtt = detectAttachmentInThread();
-    lastScanInfo = { path: path(), dmNodes: nodes.length, queued: 0, thread: true, method: force ? 'force' : 'tail', peer: '', hasAttachment: hasAtt };
+    lastScanInfo = { path: path(), dmNodes: nodes.length, queued: 0, thread: true, method: force ? 'force' : 'tail', peer: '', hasAttachment: hasAtt, listDebug: lastScanInfo.listDebug || '' };
     if (!nodes.length) {
       if (force && hasAtt) {
         var peer0 = getThreadUsername();
@@ -221,13 +341,8 @@ export const INJECTOR_SOURCE = `
     }
   }
 
-  function scanComments() {
-    if (!isPostPage()) return;
-  }
-
   function scan() {
     try { scanDms(false); } catch (e) {}
-    try { scanComments(); } catch (e) {}
   }
 
   window.__TE_IG_FORCE_SCAN_THREAD__ = function () {
@@ -246,52 +361,72 @@ export const INJECTOR_SOURCE = `
   window.__TE_IG_STATUS__ = function () {
     return {
       ready: true, path: path(), seen: SEEN.size, direct: isDirectPage(), inbox: isInbox(),
-      thread: isThread(), post: isPostPage(), hasCompose: hasCompose(), peer: getThreadUsername(), lastScan: lastScanInfo
+      thread: isThread(), post: isPostPage(), hasCompose: hasCompose(), peer: getThreadUsername(),
+      lastScan: lastScanInfo
     };
   };
 
-  function collectUnreadRows() {
-    var rows = [];
-    var anchors = document.querySelectorAll('a[href*="/direct/t/"]');
-    var seenHref = {};
-    for (var i = 0; i < anchors.length; i++) {
-      var a = anchors[i];
-      var href = a.getAttribute('href') || '';
-      if (!href || seenHref[href]) continue;
-      var row = a.closest('[role="button"]') || a.parentElement || a;
-      if (!isUnreadRow(row)) continue;
-      var preview = (row.innerText || '').replace(/\\s+/g, ' ').trim();
-      if (isYouSentPreview(preview) && !/\\d+\\s*new message/i.test(preview) && !hasBlueUnreadIndicator(row)) continue;
-      seenHref[href] = true;
-      rows.push({ el: a, href: href, preview: preview.slice(0, 120), username: usernameFromPreview(preview) });
-    }
-    return rows;
-  }
-
   window.__TE_IG_LIST_CONVERSATIONS__ = function () {
-    return collectUnreadRows().map(function (r, idx) {
-      return { index: idx, preview: r.preview, href: r.href, unread: true, username: r.username || '' };
+    var rows = collectUnreadRows();
+    return rows.map(function (r, idx) {
+      return {
+        index: idx,
+        preview: r.preview,
+        href: r.href,
+        unread: true,
+        username: r.username || '',
+        score: r.score || 0,
+        debug: lastScanInfo.listDebug || ''
+      };
     });
   };
   window.__TE_IG_LIST_UNREAD__ = window.__TE_IG_LIST_CONVERSATIONS__;
 
   window.__TE_IG_OPEN_FIRST_UNREAD__ = function () {
     var rows = collectUnreadRows();
-    if (!rows.length) return { ok: false, reason: 'no_unread', total: 0 };
-    rows[0].el.click();
-    return { ok: true, via: 'first_unread', total: rows.length, preview: rows[0].preview, username: rows[0].username || '' };
+    if (!rows.length) {
+      return { ok: false, reason: 'no_unread', total: 0, debug: lastScanInfo.listDebug || '' };
+    }
+    try { rows[0].el.click(); } catch (e) {
+      return { ok: false, reason: 'click_fail', total: rows.length, debug: lastScanInfo.listDebug || '' };
+    }
+    return {
+      ok: true,
+      via: 'first_unread',
+      total: rows.length,
+      preview: rows[0].preview,
+      username: rows[0].username || '',
+      score: rows[0].score || 0,
+      debug: lastScanInfo.listDebug || ''
+    };
   };
 
   window.__TE_IG_OPEN_CONV_INDEX__ = function (index) {
     var rows = collectUnreadRows();
-    if (!rows[index]) return { ok: false, reason: 'no_unread', total: rows.length };
-    rows[index].el.click();
-    return { ok: true, via: 'index', total: rows.length, preview: rows[index].preview, username: rows[index].username || '' };
+    if (!rows[index]) return { ok: false, reason: 'no_unread', total: rows.length, debug: lastScanInfo.listDebug || '' };
+    try { rows[index].el.click(); } catch (e) {
+      return { ok: false, reason: 'click_fail', total: rows.length };
+    }
+    return {
+      ok: true,
+      via: 'index',
+      total: rows.length,
+      preview: rows[index].preview,
+      username: rows[index].username || '',
+      score: rows[index].score || 0
+    };
   };
 
   window.__TE_IG_GOTO_INBOX__ = function () {
     try {
-      var selectors = ['a[href="/direct/inbox/"]','a[href*="/direct/inbox"]','svg[aria-label="Messenger"]','a[aria-label*="Direct"]','a[aria-label*="Messenger"]'];
+      var selectors = [
+        'a[href="/direct/inbox/"]',
+        'a[href*="/direct/inbox"]',
+        'svg[aria-label="Messenger"]',
+        'a[aria-label*="Direct"]',
+        'a[aria-label*="Messenger"]',
+        'a[aria-label*="پیام"]'
+      ];
       for (var i = 0; i < selectors.length; i++) {
         var el = document.querySelector(selectors[i]);
         if (!el) continue;
