@@ -377,9 +377,11 @@ export default function InstagramPanel(): JSX.Element {
           ref={webviewRef as any}
           src="https://www.instagram.com/direct/inbox/"
           className="h-full w-full"
-          // @ts-expect-error webview
+          // @ts-expect-error webview attrs
           allowpopups="true"
           partition="persist:instagram"
+          webpreferences="contextIsolation=yes, javascript=yes, plugins=yes, nativeWindowOpen=yes"
+          useragent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         />
       </div>
     </div>
