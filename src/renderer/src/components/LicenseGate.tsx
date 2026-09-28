@@ -33,12 +33,26 @@ export default function LicenseGate({ onActivated }: Props): JSX.Element {
         setLoading(false)
         return
       }
+      const machineId = await window.api.getMachineId()
+      const keyNorm = license.trim()
+      const prevKey = String((await window.api.getStore('licenseKey')) || '')
+      const prevMachine = String((await window.api.getStore('licenseMachineId')) || '')
+      if (prevKey && prevKey === keyNorm && prevMachine && prevMachine !== machineId) {
+        setError('این لایسنس قبلاً روی سیستم دیگری فعال شده است')
+        setLoading(false)
+        return
+      }
       await window.api.setStore('licenseUsername', username.trim().replace(/^@/, '').toLowerCase())
       await window.api.setStore('licenseEmail', email.trim().toLowerCase())
-      await window.api.setStore('licenseKey', license.trim())
+      await window.api.setStore('licenseKey', keyNorm)
       await window.api.setStore('licenseLock', res.lock || '')
       await window.api.setStore('licenseExpiresAt', res.expiresAt || '')
+      await window.api.setStore('licenseMachineId', machineId)
       await window.api.setStore('licenseActivated', true)
+      await window.api.setStore(
+        'licenseBinding',
+        JSON.stringify({ key: keyNorm.slice(0, 24), machineId, at: Date.now() })
+      )
       onActivated()
     } catch {
       setError('خطا در اعتبارسنجی')
@@ -58,7 +72,7 @@ export default function LicenseGate({ onActivated }: Props): JSX.Element {
           <AppMark className="h-14 w-14" />
           <h1 className="text-sm font-semibold">فعال‌سازی TE IG Assist</h1>
           <p className="text-[11px] text-[hsl(var(--muted-foreground))]">
-            فقط نام کاربری، ایمیل و لایسنس کافی است
+            نام کاربری، ایمیل و لایسنس — هر لایسنس فقط روی یک سیستم
           </p>
         </div>
 
