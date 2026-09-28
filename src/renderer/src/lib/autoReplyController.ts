@@ -596,7 +596,10 @@ export class AutoReplyController {
             this.pushActivity('info', `رد ری‌اکشن/لایک: ${(row.preview || '').slice(0, 40)}`)
             continue
           }
-          if (this.isStillHandled(key, row.preview)) continue
+          if (this.isStillHandled(key, row.preview)) {
+            this.pushActivity('info', `رد (قبلاً رسیدگی): ${(row.preview || '').slice(0, 36)}`)
+            continue
+          }
           const extras = extractUsernameCandidates(row.preview)
           if (!isDmUserAllowed(uname || extras[0], this.dmFilter, extras)) {
             this.markThreadHandled(key, row.preview, true)
@@ -608,6 +611,21 @@ export class AutoReplyController {
         }
 
         if (!chosen) {
+          // list داشت ولی همه handled/فیلتر → OPEN_FIRST نزن (جلوگیری از حلقه)
+          if (list.length > 0) {
+            this.pushActivity(
+              'info',
+              `همه ${list.length} مورد لیست قبلاً رسیدگی/فیلتر شده‌اند`
+            )
+            if (attempt < 2) {
+              this.enqueueTask('open_first_unread', { attempt: attempt + 1 }, 2500)
+            } else {
+              this.unreadPass = 99
+              this.cycleBusy = false
+              this.pushActivity('info', 'پایان پاس unread')
+            }
+            break
+          }
           const res = await this.exec<{
             ok?: boolean
             reason?: string
@@ -633,15 +651,21 @@ export class AutoReplyController {
           }
           if (
             /Reacted\s+/i.test(res.preview || '') ||
-            /Liked a message/i.test(res.preview || '')
+            /Liked a message/i.test(res.preview || '') ||
+            /\bYou:\s/i.test(res.preview || '') ||
+            /\bYou sent\b/i.test(res.preview || '')
           ) {
-            this.pushActivity('info', `رد ری‌اکشن: ${(res.preview || '').slice(0, 40)}`)
+            const unameSkip = res.username || extractUsernameFromPreview(res.preview || '')
+            const keySkip = this.threadKeyFromPreview(res.preview || '', unameSkip)
+            this.markThreadHandled(keySkip, res.preview || '', true)
+            this.pushActivity('info', `رد (ری‌اکشن/You): ${(res.preview || '').slice(0, 40)}`)
             this.enqueueTask('back_inbox', {}, 400)
             break
           }
           const uname = res.username || extractUsernameFromPreview(res.preview || '')
           const key = this.threadKeyFromPreview(res.preview || '', uname)
           if (this.isStillHandled(key, res.preview || '')) {
+            this.pushActivity('info', `رد (قبلاً رسیدگی): ${(res.preview || '').slice(0, 36)}`)
             this.enqueueTask('back_inbox', {}, 600)
             break
           }
