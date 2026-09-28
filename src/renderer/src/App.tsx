@@ -40,8 +40,19 @@ function App(): JSX.Element {
 
       if (activated && typeof u === 'string' && typeof e === 'string' && typeof key === 'string') {
         const ok = await validateLicense(u, e, key)
-        setLicensed(ok.ok)
-        if (ok.ok && ok.expiresAt) {
+        const machineId = await window.api.getMachineId()
+        const bound = String((await window.api.getStore('licenseMachineId')) || '')
+        let deviceOk = true
+        if (ok.ok) {
+          if (!bound) {
+            await window.api.setStore('licenseMachineId', machineId)
+          } else if (bound !== machineId) {
+            deviceOk = false
+            await window.api.setStore('licenseActivated', false)
+          }
+        }
+        setLicensed(ok.ok && deviceOk)
+        if (ok.ok && deviceOk && ok.expiresAt) {
           await window.api.setStore('licenseExpiresAt', ok.expiresAt)
           if (ok.lock) await window.api.setStore('licenseLock', ok.lock)
         }
@@ -56,44 +67,23 @@ function App(): JSX.Element {
   const toggleAutoReply = async () => {
     const next = !autoReplyEnabled
     setAutoReplyEnabled(next)
+    autoReplyController.setEnabled(next)
     await window.api.setStore('autoReplyEnabled', next)
   }
 
   const toggleAutoCycle = async () => {
     const next = !autoCycle
     setAutoCycle(next)
-    await window.api.setStore('autoCycle', next)
     autoReplyController.setAutoCycle(next)
+    await window.api.setStore('autoCycle', next)
   }
 
-  const onCycleMinutesChange = async (m: number) => {
+  const onCycleMinutesChange = async (mins: number) => {
+    const m = Math.max(0.25, Math.min(180, mins))
     setCycleMinutes(m)
     const ms = Math.round(m * 60_000)
-    await window.api.setStore('cycleIntervalMs', ms)
     autoReplyController.setCycleIntervalMs(ms)
-  }
-
-  const onForceRun = () => {
-    autoReplyController.forceRun()
-  }
-
-  if (!isReady) {
-    return (
-      <div className="flex h-full w-full items-center justify-center bg-[hsl(var(--background))]">
-        <motion.div
-          initial={{ opacity: 0, scale: 0.92 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="flex flex-col items-center gap-5"
-        >
-          <AppMark className="h-14 w-14" />
-          <p className="text-sm font-medium text-[hsl(var(--muted-foreground))]">در حال آماده‌سازی…</p>
-        </motion.div>
-      </div>
-    )
-  }
-
-  if (!licensed) {
-    return <LicenseGate onActivated={() => setLicensed(true)} />
+    await window.api.setStore('cycleIntervalMs', ms)
   }
 
   const tabs: { id: TabId; label: string; icon: typeof Settings }[] = [
@@ -103,81 +93,71 @@ function App(): JSX.Element {
     { id: 'about', label: 'درباره', icon: Info }
   ]
 
+  if (!isReady) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-[hsl(var(--background))]">
+        <RefreshCw className="h-6 w-6 animate-spin text-[hsl(var(--primary))]" />
+      </div>
+    )
+  }
+
+  if (!licensed) {
+    return <LicenseGate onActivated={() => setLicensed(true)} />
+  }
+
   return (
-    <div className="flex h-full w-full flex-col overflow-hidden">
-      <header className="panel-glass z-20 flex h-13 shrink-0 items-center justify-between gap-2 px-3">
-        <div className="flex items-center gap-2.5">
-          <AppMark className="h-8 w-8" />
+    <div className="flex h-screen flex-col overflow-hidden bg-[hsl(var(--background))] text-[hsl(var(--foreground))]">
+      <header className="flex h-12 shrink-0 items-center justify-between border-b border-[hsl(var(--border)/0.7)] bg-[hsl(var(--card)/0.6)] px-3 backdrop-blur-md">
+        <div className="flex items-center gap-2">
+          <AppMark className="h-7 w-7" />
           <div className="leading-tight">
-            <h1 className="text-[13px] font-semibold tracking-tight">TE IG Assist</h1>
-            <p className="text-[10px] text-[hsl(var(--muted-foreground))]">دستیار حرفه‌ای اینستاگرام</p>
+            <div className="text-[12px] font-semibold">TE IG Assist</div>
+            <div className="text-[9px] text-[hsl(var(--muted-foreground))]">دستیار حرفه‌ای اینستاگرام</div>
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center justify-end gap-1.5">
-          <div
-            className={cn(
-              'flex items-center gap-1.5 rounded-full px-2 py-1 text-[10px] font-medium',
-              autoReplyEnabled
-                ? 'bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/25'
-                : 'bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))]'
-            )}
-          >
-            <span
-              className={cn(
-                'h-1.5 w-1.5 rounded-full',
-                autoReplyEnabled ? 'bg-emerald-400 animate-pulse' : 'bg-[hsl(var(--muted-foreground))]'
-              )}
-            />
-            {autoReplyEnabled ? 'فعال' : 'غیرفعال'}
-          </div>
-
+        <div className="flex items-center gap-2">
           <button
-            onClick={toggleAutoReply}
+            type="button"
+            onClick={() => void toggleAutoReply()}
             className={cn(
-              'flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[11px] font-medium transition-all',
+              'flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[11px] font-medium transition-all',
               autoReplyEnabled
-                ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
-                : 'bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))]'
+                ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
+                : 'border-[hsl(var(--border))] bg-[hsl(var(--muted)/0.3)] text-[hsl(var(--muted-foreground))]'
             )}
           >
             <Power className="h-3.5 w-3.5" />
-            {autoReplyEnabled ? 'روشن' : 'خاموش'}
+            {autoReplyEnabled ? 'فعال' : 'خاموش'}
           </button>
 
           <button
-            onClick={onForceRun}
-            disabled={!autoReplyEnabled}
-            className={cn(
-              'flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[11px] font-medium',
-              autoReplyEnabled
-                ? 'bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30 hover:bg-sky-500/25'
-                : 'cursor-not-allowed bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))] opacity-50'
-            )}
+            type="button"
+            onClick={() => autoReplyController.forceRun()}
+            className="flex items-center gap-1.5 rounded-full border border-[hsl(var(--primary)/0.35)] bg-[hsl(var(--primary)/0.12)] px-3 py-1.5 text-[11px] font-medium text-[hsl(var(--primary))]"
           >
             <Play className="h-3.5 w-3.5" />
             اجرا فورس
           </button>
 
           <button
-            onClick={toggleAutoCycle}
+            type="button"
+            onClick={() => void toggleAutoCycle()}
             className={cn(
-              'flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[11px] font-medium',
+              'flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[11px] font-medium',
               autoCycle
-                ? 'bg-violet-500/15 text-violet-300 ring-1 ring-violet-500/30'
-                : 'bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))]'
+                ? 'border-sky-500/40 bg-sky-500/15 text-sky-300'
+                : 'border-[hsl(var(--border))] text-[hsl(var(--muted-foreground))]'
             )}
           >
-            <RefreshCw className={cn('h-3.5 w-3.5', autoCycle && 'animate-spin-slow')} />
+            <Timer className="h-3.5 w-3.5" />
             {autoCycle ? 'اتوماتیک' : 'دستی'}
           </button>
 
-          <div className="flex items-center gap-1 rounded-full bg-[hsl(var(--secondary))] px-2 py-1 text-[10px]">
-            <Timer className="h-3 w-3 text-[hsl(var(--muted-foreground))]" />
+          <div className="flex items-center gap-1 rounded-full border border-[hsl(var(--border))] px-2 py-1 text-[11px]">
             <input
               type="number"
               min={0.25}
-              max={30}
               step={0.25}
               value={cycleMinutes}
               onChange={(e) => void onCycleMinutesChange(Number(e.target.value) || 1)}
