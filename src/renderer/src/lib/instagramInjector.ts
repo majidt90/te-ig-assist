@@ -1,6 +1,6 @@
 /**
  * Instagram injector — robust unread detection for current IG web DOM.
- * Fix: text unreads (چی؟), empty thread scan 0/0, multi-hit inbox.
+ * Fix: multi-unread (Mohamad 4 new messages), stop missing blue-dot rows.
  */
 
 export const INJECTOR_SOURCE = `
@@ -146,10 +146,10 @@ export const INJECTOR_SOURCE = `
   function rowLooksLikeConversation(el) {
     try {
       var r = el.getBoundingClientRect();
-      if (r.height < 40 || r.height > 180) return false;
-      if (r.width < 100) return false;
-      if (r.left > (window.innerWidth || 900) * 0.55) return false;
-      if (r.top < 40) return false;
+      if (r.height < 36 || r.height > 220) return false;
+      if (r.width < 80) return false;
+      if (r.left > (window.innerWidth || 900) * 0.62) return false;
+      if (r.top < 20) return false;
       return true;
     } catch (e) { return false; }
   }
@@ -215,6 +215,24 @@ export const INJECTOR_SOURCE = `
       if (sc >= 2) {
         var link = el.querySelector('a[href*="/direct/t/"]');
         pushRow(link || el, link ? (link.getAttribute('href') || '') : '', prev, sc);
+      }
+    }
+    if (rows.length < 3) {
+      var allBtn = document.querySelectorAll('div[role="button"], a[href*="/direct/t/"]');
+      for (var c = 0; c < allBtn.length; c++) {
+        var cel = allBtn[c];
+        try {
+          var cr = cel.getBoundingClientRect();
+          if (cr.height < 36 || cr.height > 240 || cr.width < 80) continue;
+          if (cr.left > (window.innerWidth || 900) * 0.55) continue;
+          if (!hasBlueUnreadIndicator(cel) && !hasBlueUnreadIndicator(cel.parentElement)) continue;
+          var cprev = (cel.innerText || '').replace(/\\s+/g, ' ').trim();
+          if (!cprev || cprev.length < 2) continue;
+          if (isYouSentPreview(cprev) || isReactionOnlyPreview(cprev)) continue;
+          var clink = cel.querySelector('a[href*="/direct/t/"]') || (cel.tagName === 'A' ? cel : null);
+          var chref = clink ? (clink.getAttribute('href') || '') : '';
+          pushRow(clink || cel, chref, cprev, 8);
+        } catch (eC) {}
       }
     }
     rows.sort(function (a, b) { return (b.score || 0) - (a.score || 0); });
