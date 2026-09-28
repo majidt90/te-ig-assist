@@ -1,4 +1,6 @@
-import { app, shell, BrowserWindow, Tray, Menu, nativeImage, ipcMain } from 'electron'
+import { app, shell, BrowserWindow, Tray, Menu, nativeImage, ipcMain, session } from 'electron'
+import { hostname, platform, arch } from 'os'
+import { createHash } from 'crypto'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import Store from 'electron-store'
@@ -40,9 +42,27 @@ const store = new Store({
     licenseLock: '',
     licenseKey: '',
     licenseExpiresAt: '',
+    licenseMachineId: '',
     windowBounds: { width: 1400, height: 900 }
   }
 })
+
+function getMachineId(): string {
+  const raw = [hostname(), platform(), arch(), app.getPath('userData')].join('|')
+  return createHash('sha256').update(raw).digest('hex').slice(0, 32)
+}
+
+function setupInstagramSession(): void {
+  try {
+    const ses = session.fromPartition('persist:instagram')
+    ses.setPermissionRequestHandler((_wc, _permission, callback) => {
+      callback(true)
+    })
+    ses.setPermissionCheckHandler(() => true)
+  } catch {
+    /* ignore */
+  }
+}
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
@@ -117,10 +137,15 @@ function createWindow(): void {
     shell.openExternal(details.url)
     return { action: 'deny' }
   })
-  mainWindow.webContents.on('will-attach-webview', (_e, webPreferences) => {
+  mainWindow.webContents.on('will-attach-webview', (_e, webPreferences, params) => {
     webPreferences.nodeIntegration = false
     webPreferences.contextIsolation = true
+    webPreferences.sandbox = false
+    webPreferences.webSecurity = true
     delete (webPreferences as any).preload
+    if (params) {
+      params.partition = params.partition || 'persist:instagram'
+    }
   })
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
@@ -169,11 +194,25 @@ ipcMain.handle('store:set', (_e, key: string, value: unknown) => {
   store.set(key, value)
   return true
 })
+ipcMain.handle('machine:id', () => getMachineId())
 ipcMain.handle('store:getAll', () => store.store)
 
+// Help Instagram cookies on strict OS / corporate policies
+try {
+  app.commandLine.appendSwitch(
+    'disable-features',
+    'SameSiteByDefaultCookies,CookiesWithoutSameSiteMustBeSecure'
+  )
+} catch {
+  /* ignore */
+}
+
 app.whenReady().then(() => {
-  electronApp.setAppUserModelId('com.majidt90.te-ig-assist')
-  app.on('browser-window-created', (_, window) => optimizer.watchWindowShortcuts(window))
+  electronApp.setAppUserModelId('com.termimal.te-ig-assist')
+  app.on('browser-window-created', (_e, window) => {
+    optimizer.watchWindowShortcuts(window)
+  })
+  setupInstagramSession()
   createWindow()
   createTray()
   app.on('activate', () => {
@@ -182,7 +221,12 @@ app.whenReady().then(() => {
   })
 })
 
-app.on('window-all-closed', () => {})
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    /* keep tray alive */
+  }
+})
+
 app.on('before-quit', () => {
   ;(app as any).isQuitting = true
 })
